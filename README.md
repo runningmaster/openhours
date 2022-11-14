@@ -45,5 +45,5 @@ Sat, 12 Nov 08:00-13:00 false
 
 ### See also:
 
-https://pkg.go.dev/github.com/chneau/openhours
-https://pkg.go.dev/github.com/yauhen-l/openhours
+* https://pkg.go.dev/github.com/chneau/openhours
+* https://pkg.go.dev/github.com/yauhen-l/openhours
