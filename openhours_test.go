@@ -121,10 +121,9 @@ func TestSplit(t *testing.T) {
 		t.Run(test.lstr, func(t *testing.T) {
 			_, ok, err := ohs.Split(test.lstr)
 			if err != nil {
-				if err != nil {
-					t.Fatal(err)
-				}
+				t.Fatal(err)
 			}
+
 			if ok != test.want {
 				t.Errorf("case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
@@ -166,10 +165,9 @@ Fri, 11 Nov 00:00-23:59`,
 		t.Run(test.lstr, func(t *testing.T) {
 			_, _, err := ohs.Split(test.lstr)
 			if err != nil {
-				if err != nil {
-					t.Fatal(err)
-				}
+				t.Fatal(err)
 			}
+
 			if ohs.String() != test.want {
 				t.Errorf("case %q: got %v, want %v", test.lstr, ohs.String(), test.want)
 			}
