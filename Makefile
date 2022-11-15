@@ -27,7 +27,7 @@ test: lint
 
 ## bench: runs `go test` with benchmarks
 bench: lint
-	@go list ./... | grep -v vendor/ | xargs -L1 go test -bench . -benchmem
+	@go list ./... | grep -v vendor/ | xargs -L1 go test -bench . -benchmem -run=^$
 .PHONY: bench
 
 ## help: prints this help message
