@@ -14,7 +14,7 @@ for _, v := range []string{
 	"Mo-Tu, Fr 08:00-12:00 14:00-17:00 We 08:00-08:00 Th, Sa-Su 00:00-00:00",
 	"Mo-Th 08:00-17:00; Fr 08:00-18:00; Sa 08:00-13:00",
 } {
-	_, ok, err := ohs.Split(v)
+	_, ok, err := ohs.Split(v) // ok, err := ohs.Match(v)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -1,12 +1,8 @@
 package openhours
 
 import (
-	"bufio"
-	"errors"
 	"fmt"
-	"io"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -15,7 +11,6 @@ import (
 // Splitter contains auxiliary buffers and fields for parsing 'opening_hours'
 // layout string.
 type Splitter struct {
-	input  bufio.Reader
 	output []time.Time
 
 	bufDay  []int
@@ -32,14 +27,11 @@ type Splitter struct {
 	tSec     int
 	tNSec    int
 	tLoc     *time.Location
-
-	matchIndex *int
 }
 
 // NewSplitter creates a new Splitter.
 func NewSplitter(t time.Time) *Splitter {
 	return &Splitter{
-		// input:    *bufio.NewReader(strings.NewReader("")),
 		output:   make([]time.Time, 14),
 		bufDay:   make([]int, 7),
 		bufHour:  make([]rune, 2),
@@ -57,51 +49,49 @@ func NewSplitter(t time.Time) *Splitter {
 	}
 }
 
-func (s *Splitter) reset(r io.Reader) {
-	s.input.Reset(r)
+func (s *Splitter) reset() {
 	s.output = s.output[:0]
 	s.bufDay = s.bufDay[:0]
 	s.bufHour = s.bufHour[:0]
 	s.bufMin = s.bufMin[:0]
-	s.matchIndex = nil
 }
 
-func (s *Splitter) parse(r io.Reader) error {
-	s.reset(r)
+func (s *Splitter) parse(layout string) error {
+	s.reset()
 
-	var (
-		currRune, nextRune rune
-		wasSpan, wasDump   bool
-		err                error
-	)
+	if len(layout) > 0 && rune(layout[len(layout)-1]) == ' ' {
+		layout = strings.TrimSpace(layout)
+	}
 
-	for {
-		currRune, _, err = s.input.ReadRune()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
+	switch {
+	case layout == "24/7":
+		layout = "Mo-Su 00:00-23:59"
+	case !strings.Contains(layout, ":"):
+		layout = layout + " 00:00-23:59"
+	case unicode.IsLetter(rune(layout[len(layout)-1])):
+		layout = layout + " 00:00-23:59"
+	}
 
-			return err
-		}
+	var wasSpan, wasDump bool
 
-		if unicode.IsDigit(currRune) {
+	for i, r := range layout {
+		if unicode.IsDigit(r) {
 			switch len(s.bufHour) {
 			case 0, 1:
-				s.bufHour = append(s.bufHour, currRune)
+				s.bufHour = append(s.bufHour, r)
 				continue // =>
 			}
 
 			switch len(s.bufMin) {
 			case 0, 1:
-				s.bufMin = append(s.bufMin, currRune)
+				s.bufMin = append(s.bufMin, r)
 				if len(s.bufMin) == 1 {
 					continue // =>
 				}
 			}
 
-			h, _ := strconv.Atoi(string(s.bufHour))
-			m, _ := strconv.Atoi(string(s.bufMin))
+			h := rtoi(s.bufHour)
+			m := rtoi(s.bufMin)
 
 			for _, day := range s.bufDay {
 				wd := int(s.tWeekDay)
@@ -119,6 +109,7 @@ func (s *Splitter) parse(r io.Reader) error {
 					day = s.tDay
 				}
 
+				ns := 0
 				if wasSpan {
 					switch {
 					// fix -00:00
@@ -128,10 +119,11 @@ func (s *Splitter) parse(r io.Reader) error {
 					case h == 24:
 						h, m = 23, 59
 					}
+					ns = 1 // ns workaround for no need sort, see setMatchIndex
 				}
 
 				s.output = append(s.output, time.Date(s.tYear, s.tMonth,
-					day, h, m, s.tSec, s.tNSec, s.tLoc),
+					day, h, m, 0, ns, s.tLoc),
 				)
 			}
 
@@ -143,42 +135,41 @@ func (s *Splitter) parse(r io.Reader) error {
 			continue // =>
 		}
 
-		if unicode.IsLetter(currRune) {
-			nextRune, _, err = s.input.ReadRune()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				return err
+		if unicode.IsLetter(r) {
+			var (
+				weekDay time.Weekday = -1
+				next    rune
+			)
+
+			if len(layout) > i+1 {
+				next = rune(layout[i+1])
 			}
 
-			var weekDay time.Weekday = -1
-
-			switch currRune {
+			switch r {
 			case 'M', 'm':
-				switch nextRune {
+				switch next {
 				case 'o', 'O':
 					weekDay = time.Monday
 				}
 			case 'T', 't':
-				switch nextRune {
+				switch next {
 				case 'u', 'U':
 					weekDay = time.Tuesday
 				case 'h', 'H':
 					weekDay = time.Thursday
 				}
 			case 'W', 'w':
-				switch nextRune {
+				switch next {
 				case 'e', 'E':
 					weekDay = time.Wednesday
 				}
 			case 'F', 'f':
-				switch nextRune {
+				switch next {
 				case 'r', 'R':
 					weekDay = time.Friday
 				}
 			case 'S', 's':
-				switch nextRune {
+				switch next {
 				case 'a', 'A':
 					weekDay = time.Saturday
 				case 'u', 'U':
@@ -212,57 +203,56 @@ func (s *Splitter) parse(r io.Reader) error {
 			continue // =>
 		}
 
-		if currRune == '-' {
+		if r == '-' {
 			wasSpan = true
 		}
+	}
+
+	if len(s.output)%2 != 0 {
+		return fmt.Errorf("openhours: invalid input layout string %q", layout)
 	}
 
 	return nil
 }
 
-func (s *Splitter) setMatchIndex() {
+func (s *Splitter) matchIndex() int {
 	for i := 0; i < len(s.output); i++ {
+		// ns workaround for no need sort
+		if s.output[i].Weekday() != s.tWeekDay || s.output[i].Nanosecond() != 1 {
+			continue
+		}
+
 		if s.output[i].After(s.t) {
-			s.matchIndex = &i
-			break
+			return i
 		}
 	}
+
+	return -1
 }
 
-// Split partitions a layout string into a sorted slice of time.Time.
+// Split2 partitions a layout string into a sorted slice of time.Time.
 // Also it returns true in second param if initial time is in the open hours.
 func (s *Splitter) Split(layout string) ([]time.Time, bool, error) {
-	fix := func(s string) string {
-		switch s {
-		case "":
-			return s
-		case "24/7":
-			return "Mo-Su 00:00-23:59"
-		}
-
-		if strings.Contains(s, ":") {
-			return s
-		}
-
-		return s + " 00:00-23:59"
-	}
-
-	err := s.parse(strings.NewReader(fix(layout)))
+	err := s.parse(layout)
 	if err != nil {
 		return nil, false, err
-	}
-
-	if len(s.output)%2 != 0 {
-		return nil, false, fmt.Errorf("openhours: invalid input layout string %q", layout)
 	}
 
 	sort.Slice(s.output, func(i, j int) bool {
 		return s.output[i].Before(s.output[j])
 	})
 
-	s.setMatchIndex()
+	return s.output, s.matchIndex() > -1, nil
+}
 
-	return s.output, s.matchIndex != nil && *s.matchIndex%2 == 1, nil
+// Match returns true in second param if initial time is in the open hours.
+func (s *Splitter) Match(layout string) (bool, error) {
+	err := s.parse(layout)
+	if err != nil {
+		return false, err
+	}
+
+	return s.matchIndex() > -1, nil
 }
 
 // String implements fmt.Stringer to be printed for testing purposes.
@@ -277,6 +267,7 @@ func (s *Splitter) String() string {
 		sb  strings.Builder
 	)
 
+	matchIndex := s.matchIndex()
 	for i, v := range s.output {
 		if day != v.Day() {
 			if i != 0 {
@@ -291,7 +282,7 @@ func (s *Splitter) String() string {
 				sb.WriteRune(' ')
 				sb.WriteString(v.Format("15:04"))
 			case 1:
-				if s.matchIndex != nil && *s.matchIndex == i {
+				if matchIndex == i {
 					sb.WriteRune('*') // it is open
 				} else {
 					sb.WriteRune('-')
@@ -304,4 +295,18 @@ func (s *Splitter) String() string {
 	}
 
 	return sb.String()
+}
+
+func rtoi(r []rune) int {
+	sum := 0
+
+	for i, r := range r {
+		sum += int(r - '0')
+		if i == 0 {
+			sum *= 10
+		}
+
+	}
+
+	return sum
 }

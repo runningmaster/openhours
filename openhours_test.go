@@ -15,7 +15,7 @@ import (
 	"github.com/runningmaster/openhours"
 )
 
-func TestSplit(t *testing.T) {
+func TestSplitMatch(t *testing.T) {
 	tests := [...]struct {
 		lstr string
 		want bool
@@ -28,6 +28,7 @@ func TestSplit(t *testing.T) {
 			lstr: "Mo 09:00-14:00 Tu-Fr 00:00-00:00",
 			want: true,
 		},
+
 		{
 			lstr: "Su-mo",
 			want: false,
@@ -40,10 +41,12 @@ func TestSplit(t *testing.T) {
 			lstr: "Mo-Tu, Fr 14:00-17:00 08:00-12:00 We 08:00-13:00 14:00-18:00 Th, Sa-Su 00:00-00:00",
 			want: true,
 		},
+
 		{
 			lstr: "Mo, Su 07:30-20:00; Tu-Sa 07:30-20:30",
 			want: true,
 		},
+
 		{
 			lstr: "Su 06:00-07:00 07:30-21:00 22:00-23:00",
 			want: false,
@@ -92,6 +95,14 @@ func TestSplit(t *testing.T) {
 			lstr: "Sa-Su 00:00-24:00",
 			want: false,
 		},
+		{
+			lstr: "Mo-Tu 08:00-17:00; We-Th, Fr, Sa-Su",
+			want: true,
+		},
+		{
+			lstr: "Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30",
+			want: true,
+		},
 	}
 
 	now := time.Now()
@@ -125,7 +136,16 @@ func TestSplit(t *testing.T) {
 			}
 
 			if ok != test.want {
-				t.Errorf("case %q: got %v, want %v", test.lstr, ok, test.want)
+				t.Errorf("split: case %q: got %v, want %v", test.lstr, ok, test.want)
+			}
+
+			ok, err = ohs.Match(test.lstr)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if ok != test.want {
+				t.Errorf("match: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
 		})
 	}
@@ -183,12 +203,15 @@ func TestTestdata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var l []byte
-
 	r := bufio.NewReader(bytes.NewReader(b))
 	s := openhours.NewSplitter(time.Now())
 
-	var sb strings.Builder
+	var (
+		l        []byte
+		sb       strings.Builder
+		ok1, ok2 bool
+	)
+
 	for {
 		l, _, err = r.ReadLine()
 		if err != nil {
@@ -199,9 +222,18 @@ func TestTestdata(t *testing.T) {
 			continue
 		}
 
-		_, _, err = s.Split(string(l))
+		_, ok1, err = s.Split(string(l))
 		if err != nil {
 			t.Errorf("split err %q: %v", string(l), err)
+		}
+
+		ok2, err = s.Match(string(l))
+		if err != nil {
+			t.Errorf("split err %q: %v", string(l), err)
+		}
+
+		if ok1 != ok2 {
+			t.Fatal("testdata: split.ok != match.ok")
 		}
 
 		sb.Reset()
@@ -230,5 +262,28 @@ func TestREADME(t *testing.T) {
 			log.Fatal(err)
 		}
 		fmt.Printf("%s\n%s %v\n\n", v, ohs, ok)
+	}
+}
+
+var blackhole bool
+
+func BenchmarkSplit(b *testing.B) {
+	now := time.Now()
+	ohs := openhours.NewSplitter(now)
+	var ok bool
+
+	for i := 0; i < b.N; i++ {
+		_, ok, _ = ohs.Split("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
+		blackhole = ok
+	}
+}
+
+func BenchmarkMatch(b *testing.B) {
+	now := time.Now()
+	ohs := openhours.NewSplitter(now)
+	var ok bool
+	for i := 0; i < b.N; i++ {
+		ok, _ = ohs.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
+		blackhole = ok
 	}
 }
