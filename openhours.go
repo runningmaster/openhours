@@ -230,7 +230,7 @@ func (s *Splitter) matchIndex() int {
 	return -1
 }
 
-// Split2 partitions a layout string into a sorted slice of time.Time.
+// Split partitions a layout string into a sorted slice of time.Time.
 // Also it returns true in second param if initial time is in the open hours.
 func (s *Splitter) Split(layout string) ([]time.Time, bool, error) {
 	err := s.parse(layout)
