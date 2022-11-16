@@ -298,15 +298,15 @@ func (s *Splitter) String() string {
 }
 
 func rtoi(r []rune) int {
-	sum := 0
+	num := 0
 
 	for i, r := range r {
-		sum += int(r - '0')
+		num += int(r - '0')
 		if i == 0 {
-			sum *= 10
+			num *= 10
 		}
 
 	}
 
-	return sum
+	return num
 }
