@@ -75,7 +75,7 @@ func (s *Splitter) parse(layout string) error {
 	var wasSpan, wasDump bool
 
 	for i, r := range layout {
-		if unicode.IsDigit(r) {
+		if '0' <= r && r <= '9' {
 			switch len(s.bufHour) {
 			case 0, 1:
 				s.bufHour = append(s.bufHour, r)
@@ -135,7 +135,7 @@ func (s *Splitter) parse(layout string) error {
 			continue // =>
 		}
 
-		if unicode.IsLetter(r) {
+		if 'F' <= r && r <= 'W' || 'f' <= r && r <= 'w' {
 			var (
 				weekDay time.Weekday = -1
 				next    rune
