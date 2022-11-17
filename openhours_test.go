@@ -222,12 +222,12 @@ func TestTestdata(t *testing.T) {
 			continue
 		}
 
-		_, ok1, err = s.Split(string(l))
+		ok1, err = s.Match(string(l))
 		if err != nil {
 			t.Errorf("split err %q: %v", string(l), err)
 		}
 
-		ok2, err = s.Match(string(l))
+		_, ok2, err = s.Split(string(l))
 		if err != nil {
 			t.Errorf("split err %q: %v", string(l), err)
 		}
