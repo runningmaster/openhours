@@ -21,14 +21,21 @@ lint: vet
 
 ## test: runs all tests
 test: lint
-	@go list ./... | grep -v vendor/ | xargs -L1 go test -cover -v -count=1
+	@go test -cover -count=1
 .PHONY: test
 
 
 ## bench: runs `go test` with benchmarks
 bench: lint
-	@go list ./... | grep -v vendor/ | xargs -L1 go test -bench . -benchmem -run=^$
+	@go test -bench . -benchmem -run=^$
 .PHONY: bench
+
+
+## escape: runs `go build` with escape analysis
+escape: lint
+	@go build -gcflags=-m 2>&1
+.PHONY: escape
+
 
 ## help: prints this help message
 help:
