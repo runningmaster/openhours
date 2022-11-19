@@ -209,7 +209,7 @@ func (s *Splitter) parse(layout string) error {
 	}
 
 	if len(s.output)%2 != 0 {
-		return fmt.Errorf("openhours: invalid input layout string %q", layout)
+		return fmt.Errorf("openhours: invalid input layout string")
 	}
 
 	return nil
