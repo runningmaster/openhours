@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // Splitter contains auxiliary buffers and fields for parsing 'opening_hours'
@@ -59,17 +58,27 @@ func (s *Splitter) reset() {
 func (s *Splitter) parse(layout string) error {
 	s.reset()
 
-	if len(layout) > 0 && rune(layout[len(layout)-1]) == ' ' {
-		layout = strings.TrimSpace(layout)
+	if layout == "24/7" {
+		layout = "Mo-Su"
 	}
 
-	switch {
-	case layout == "24/7":
-		layout = "Mo-Su 00:00-23:59"
-	case !strings.Contains(layout, ":"):
-		layout = layout + " 00:00-23:59"
-	case unicode.IsLetter(rune(layout[len(layout)-1])):
-		layout = layout + " 00:00-23:59"
+	dump := func(wd, day, h, m, ns int) {
+		if wd == 0 {
+			wd = 7
+		}
+		// shift month's day relative week's day
+		switch {
+		case day < wd:
+			day = s.tDay - (wd - day)
+		case day > wd:
+			day = s.tDay + (day - wd)
+		default:
+			day = s.tDay
+		}
+
+		s.output = append(s.output, time.Date(s.tYear, s.tMonth,
+			day, h, m, 0, ns, s.tLoc),
+		)
 	}
 
 	var wasSpan, wasDump bool
@@ -93,38 +102,23 @@ func (s *Splitter) parse(layout string) error {
 			h := rtoi(s.bufHour)
 			m := rtoi(s.bufMin)
 
-			for _, day := range s.bufDay {
-				wd := int(s.tWeekDay)
-				if wd == 0 {
-					wd = 7
-				}
-
-				// shift month's day relative week's day
+			ns := 0
+			if wasSpan {
 				switch {
-				case day < wd:
-					day = s.tDay - (wd - day)
-				case day > wd:
-					day = s.tDay + (day - wd)
-				default:
-					day = s.tDay
+				// fix -00:00
+				case h == 0 && m == 0:
+					h, m = 23, 59
+				// fix -24:00
+				case h == 24:
+					h, m = 23, 59
 				}
+				ns = 1 // ns workaround for no need sort, see setMatchIndex
+			}
 
-				ns := 0
-				if wasSpan {
-					switch {
-					// fix -00:00
-					case h == 0 && m == 0:
-						h, m = 23, 59
-					// fix -24:00
-					case h == 24:
-						h, m = 23, 59
-					}
-					ns = 1 // ns workaround for no need sort, see setMatchIndex
-				}
+			wd := int(s.tWeekDay)
 
-				s.output = append(s.output, time.Date(s.tYear, s.tMonth,
-					day, h, m, 0, ns, s.tLoc),
-				)
+			for _, day := range s.bufDay {
+				dump(wd, day, h, m, ns)
 			}
 
 			s.bufHour = s.bufHour[:0]
@@ -210,6 +204,14 @@ func (s *Splitter) parse(layout string) error {
 
 	if len(s.output)%2 != 0 {
 		return fmt.Errorf("openhours: invalid input layout string")
+	}
+
+	if !wasDump && len(s.bufDay) > 0 {
+		wd := int(s.tWeekDay)
+		for _, day := range s.bufDay {
+			dump(wd, day, 0, 0, 0)
+			dump(wd, day, 23, 59, 1)
+		}
 	}
 
 	return nil

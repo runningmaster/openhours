@@ -25,7 +25,7 @@ func TestSplitMatch(t *testing.T) {
 			want: true,
 		},
 		{
-			lstr: "Mo 09:00-14:00 Tu-Fr 00:00-00:00",
+			lstr: "Mo 09:00-14:00 Tu-Fr 00:00-00:00 ",
 			want: true,
 		},
 
