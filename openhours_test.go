@@ -251,7 +251,7 @@ func TestTestdata(t *testing.T) {
 	}
 }
 
-func TestREADME(t *testing.T) {
+func TestREADME(_ *testing.T) {
 	now := time.Now()
 	fmt.Printf("%s\n\n", now.Format("Mon, 02 Jan 15:04"))
 
