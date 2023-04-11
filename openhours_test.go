@@ -218,7 +218,9 @@ func TestTestdata(t *testing.T) {
 			if errors.Is(err, io.EOF) {
 				break
 			}
+
 			t.Errorf("read err %q: %v", string(l), err)
+
 			continue
 		}
 
@@ -243,6 +245,7 @@ func TestTestdata(t *testing.T) {
 		sb.WriteRune('\n')
 		sb.WriteString(s.String())
 		sb.WriteRune('\n')
+
 		fmt.Println(sb.String())
 	}
 }
@@ -270,6 +273,7 @@ var blackhole bool
 func BenchmarkSplit(b *testing.B) {
 	now := time.Now()
 	ohs := openhours.NewSplitter(now)
+
 	var ok bool
 
 	for i := 0; i < b.N; i++ {
@@ -281,7 +285,9 @@ func BenchmarkSplit(b *testing.B) {
 func BenchmarkMatch(b *testing.B) {
 	now := time.Now()
 	ohs := openhours.NewSplitter(now)
+
 	var ok bool
+
 	for i := 0; i < b.N; i++ {
 		ok, _ = ohs.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
 		blackhole = ok

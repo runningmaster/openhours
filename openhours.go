@@ -88,6 +88,7 @@ func (s *Splitter) parse(layout string) error {
 			switch len(s.bufHour) {
 			case 0, 1:
 				s.bufHour = append(s.bufHour, r)
+
 				continue // =>
 			}
 
@@ -103,6 +104,7 @@ func (s *Splitter) parse(layout string) error {
 			m := rtoi(s.bufMin)
 
 			ns := 0
+
 			if wasSpan {
 				switch {
 				// fix -00:00
@@ -112,6 +114,7 @@ func (s *Splitter) parse(layout string) error {
 				case h == 24:
 					h, m = 23, 59
 				}
+
 				ns = 1 // ns workaround for no need sort, see setMatchIndex
 			}
 
@@ -189,6 +192,7 @@ func (s *Splitter) parse(layout string) error {
 				for i := s.bufDay[l-1] + 1; i <= wd; i++ {
 					s.bufDay = append(s.bufDay, i)
 				}
+
 				wasSpan = false
 			default:
 				s.bufDay = append(s.bufDay, wd)
@@ -270,11 +274,13 @@ func (s *Splitter) String() string {
 	)
 
 	matchIndex := s.matchIndex()
+
 	for i, v := range s.output {
 		if day != v.Day() {
 			if i != 0 {
 				sb.WriteRune('\n')
 			}
+
 			sb.WriteString(v.Format("Mon, 02 Jan"))
 			sb.WriteRune(' ')
 			sb.WriteString(v.Format("15:04"))
@@ -307,7 +313,6 @@ func rtoi(r []rune) int {
 		if i == 0 {
 			num *= 10
 		}
-
 	}
 
 	return num
