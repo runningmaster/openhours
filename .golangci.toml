@@ -50,15 +50,12 @@ ignore-decls = [
   "n int",
   "r rune",
   "r io.Reader",
-  "r *csv.Reader",
   "s string",
-  "s *goquery.Selection",
   "sb strings.Builder",
   "T any",
   "t testing.T",
   "t time.Time",
   "w io.Writer",
-  "w *csv.Writer"
 ]
 
 [linters-settings.gci]
