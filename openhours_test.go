@@ -110,18 +110,19 @@ func TestSplitMatch(t *testing.T) {
 
 	switch now.Weekday() {
 	case time.Sunday:
-		day = day - 4
+		day -= 4
 	case time.Monday:
-		day = day + 2
+		day += 2
 	case time.Tuesday:
-		day = day + 1
-		//	case time.Wednesday:
+		day++
+	case time.Wednesday:
+		// noop.
 	case time.Thursday:
-		day = day - 1
+		day--
 	case time.Friday:
-		day = day - 2
+		day -= 2
 	case time.Saturday:
-		day = day - 3
+		day -= 3
 	}
 
 	// Wednesday 17:30
