@@ -16,12 +16,13 @@ vet: fmt
 ## lint: runs linters for Go source code
 lint: vet
 	@golangci-lint --version
-	@golangci-lint run ./...
+	@golangci-lint run --config .golangci.toml ./...
 .PHONY: lint
 
+
 ## test: runs all tests
-test: lint
-	@go test -cover -count=1
+test: vet
+	@go test -v -cover -count=1
 .PHONY: test
 
 
