@@ -32,11 +32,17 @@ type Splitter struct {
 
 // NewSplitter creates a new Splitter.
 func NewSplitter(t time.Time) *Splitter {
+	const (
+		len2  = 2
+		len7  = 7
+		len14 = 14
+	)
+
 	return &Splitter{
-		output:   make([]time.Time, 14),
-		bufDay:   make([]int, 7),
-		bufHour:  make([]rune, 2),
-		bufMin:   make([]rune, 2),
+		output:   make([]time.Time, len14),
+		bufDay:   make([]int, len7),
+		bufHour:  make([]rune, len2),
+		bufMin:   make([]rune, len2),
 		t:        t,
 		tYear:    t.Year(),
 		tMonth:   t.Month(),
@@ -85,6 +91,13 @@ func (s *Splitter) parse(layout string) error {
 
 	var wasSpan, wasDump bool
 
+	const (
+		h23 = 23
+		h24 = 24
+		m59 = 59
+		s1  = 1
+	)
+
 	for i, r := range layout {
 		if '0' <= r && r <= '9' {
 			switch len(s.bufHour) {
@@ -111,10 +124,10 @@ func (s *Splitter) parse(layout string) error {
 				switch {
 				// fix -00:00
 				case h == 0 && m == 0:
-					h, m = 23, 59
+					h, m = h23, m59
 				// fix -24:00
-				case h == 24:
-					h, m = 23, 59
+				case h == h24:
+					h, m = h23, m59
 				}
 
 				ns = 1 // ns workaround for no need sort, see setMatchIndex
@@ -216,7 +229,7 @@ func (s *Splitter) parse(layout string) error {
 		wd := int(s.tWeekDay)
 		for _, day := range s.bufDay {
 			dump(wd, day, 0, 0, 0)
-			dump(wd, day, 23, 59, 1)
+			dump(wd, day, h23, m59, s1)
 		}
 	}
 
