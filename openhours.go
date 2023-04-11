@@ -1,11 +1,13 @@
 package openhours
 
 import (
-	"fmt"
+	"errors"
 	"sort"
 	"strings"
 	"time"
 )
+
+var ErrInvalidLayout = errors.New("openhours: invalid input layout string")
 
 // Splitter contains auxiliary buffers and fields for parsing 'opening_hours'
 // layout string.
@@ -207,7 +209,7 @@ func (s *Splitter) parse(layout string) error {
 	}
 
 	if len(s.output)%2 != 0 {
-		return fmt.Errorf("openhours: invalid input layout string")
+		return ErrInvalidLayout
 	}
 
 	if !wasDump && len(s.bufDay) > 0 {
