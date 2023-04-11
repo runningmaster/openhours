@@ -178,7 +178,7 @@ Fri, 11 Nov 00:00-23:59`,
 
 	// November 13 17:30
 	now := time.Now()
-	now = time.Date(now.Year(), time.November, 13, 17, 30, 0, 0, now.Location())
+	now = time.Date(2022, time.November, 13, 17, 30, 0, 0, now.Location())
 	ohs := openhours.NewSplitter(now)
 
 	for _, test := range tests {
