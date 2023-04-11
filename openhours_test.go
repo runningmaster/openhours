@@ -269,7 +269,7 @@ func TestREADME(t *testing.T) {
 	}
 }
 
-var blackhole bool
+var blackhole bool //nolint:gochecknoglobals
 
 func BenchmarkSplit(b *testing.B) {
 	now := time.Now()
