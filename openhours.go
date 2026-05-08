@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -12,6 +13,10 @@ const (
 	minsPerDay  = 24 * minsPerHour // 1440
 	minsPerWeek = 7 * minsPerDay   // 10080
 	daysPerWeek = 7
+
+	// DefaultCacheSize is the maximum number of distinct layout strings held
+	// in the package-level parse cache before eviction via clock (second-chance).
+	DefaultCacheSize = 4096
 )
 
 // weekInterval stores an open/close pair as minutes from Monday 00:00.
@@ -21,11 +26,41 @@ type weekInterval struct {
 	close int
 }
 
+// clockEntry is a single slot in the second-chance ring buffer.
+type clockEntry struct {
+	key   string
+	value []weekInterval
+	ref   atomic.Bool // referenced since last clock-hand pass
+}
+
 //nolint:gochecknoglobals
 var (
-	cache   = make(map[string][]weekInterval)
-	cacheMu sync.RWMutex
+	// CacheSize controls the maximum number of entries in the shared parse cache.
+	// It must be set before the first call to NewSplitter.
+	// The default is DefaultCacheSize (4096).
+	CacheSize = DefaultCacheSize
+
+	cacheMu  sync.RWMutex
+	cache    map[string]int // layout → ring index
+	ring     []clockEntry
+	clockPos int
+
+	initOnce sync.Once
 )
+
+// initCache pre-allocates the ring buffer on first use. It reads CacheSize
+// at init time; later changes to CacheSize have no effect.
+func initCache() {
+	initOnce.Do(func() {
+		n := CacheSize
+		if n < 1 {
+			n = DefaultCacheSize
+		}
+
+		cache = make(map[string]int, n)
+		ring = make([]clockEntry, n)
+	})
+}
 
 // Splitter parses and evaluates 'opening_hours' layout strings against a fixed
 // reference time. Parsed results are memoized in a package-level cache shared
@@ -40,6 +75,8 @@ type Splitter struct {
 
 // NewSplitter returns a new Splitter with t as the reference time for open/closed evaluation.
 func NewSplitter(t time.Time) *Splitter {
+	initCache()
+
 	return &Splitter{
 		t:      t,
 		output: make([]time.Time, 0, 14), //nolint:mnd
@@ -195,25 +232,53 @@ func getOrParse(layout string) []weekInterval {
 
 	cacheMu.RLock()
 
-	ivs, ok := cache[layout]
-
-	cacheMu.RUnlock()
-
+	idx, ok := cache[layout]
 	if ok {
+		ring[idx].ref.Store(true)
+		ivs := ring[idx].value
+
+		cacheMu.RUnlock()
+
 		return ivs
 	}
+
+	cacheMu.RUnlock()
 
 	parsed := parse(layout)
 
 	cacheMu.Lock()
 
-	existing, ok := cache[layout]
-	if !ok {
-		cache[layout] = parsed
-		ivs = parsed
-	} else {
-		ivs = existing
+	// Double-check: another goroutine may have raced us.
+	idx, ok = cache[layout]
+	if ok {
+		ring[idx].ref.Store(true)
+		ivs := ring[idx].value
+
+		cacheMu.Unlock()
+
+		return ivs
 	}
+
+	// Clock eviction: advance hand past recently-referenced entries.
+	for ring[clockPos].ref.Load() {
+		ring[clockPos].ref.Store(false)
+		clockPos = (clockPos + 1) % len(ring)
+	}
+
+	// Evict stale entry and insert the new one.
+	old := ring[clockPos].key
+	if old != "" {
+		delete(cache, old)
+	}
+
+	ring[clockPos].key = layout
+	ring[clockPos].value = parsed
+	ring[clockPos].ref.Store(true)
+	cache[layout] = clockPos
+
+	clockPos = (clockPos + 1) % len(ring)
+
+	ivs := parsed
 
 	cacheMu.Unlock()
 
