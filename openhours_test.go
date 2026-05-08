@@ -3,12 +3,9 @@ package openhours_test
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +100,33 @@ func TestSplitMatch(t *testing.T) {
 			lstr: "Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30",
 			want: true,
 		},
+		{
+			lstr: "We 18:00-21:00",
+			want: false,
+		},
+		// overnight: close time on next calendar day
+		{
+			lstr: "We 08:00-01:00",
+			want: true, // 17:30 is between Wed 08:00 and Thu 01:00
+		},
+		{
+			lstr: "We 20:00-01:00",
+			want: false, // 17:30 is before Wed 20:00
+		},
+		{
+			lstr: "Mo-Su 08:00-02:00",
+			want: true, // every day open until 02:00 next day
+		},
+	}
+
+	// Separate fixed-time tests: Wednesday 23:59 — last minute of day must be "open".
+	eodTests := [...]struct {
+		lstr string
+		want bool
+	}{
+		{lstr: "We 00:00-00:00", want: true},    // full day via 00:00 sentinel
+		{lstr: "We 00:00-24:00", want: true},    // full day via 24:00 sentinel
+		{lstr: "Mo-Su 08:00-00:00", want: true}, // open until midnight, last minute included
 	}
 
 	now := time.Now()
@@ -147,6 +171,32 @@ func TestSplitMatch(t *testing.T) {
 
 			if ok != test.want {
 				t.Errorf("match: case %q: got %v, want %v", test.lstr, ok, test.want)
+			}
+		})
+	}
+
+	// Wednesday 23:59 — the last minute of day must be included in open window.
+	eodNow := time.Date(now.Year(), now.Month(), day, 23, 59, 0, 0, now.Location())
+	ohs.Reset(eodNow)
+
+	for _, test := range eodTests {
+		t.Run("eod/"+test.lstr, func(t *testing.T) {
+			_, ok, err := ohs.Split(test.lstr)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if ok != test.want {
+				t.Errorf("split eod: case %q: got %v, want %v", test.lstr, ok, test.want)
+			}
+
+			ok, err = ohs.Match(test.lstr)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if ok != test.want {
+				t.Errorf("match eod: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
 		})
 	}
@@ -204,55 +254,37 @@ func TestTestdata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := bufio.NewReader(bytes.NewReader(b))
 	s := openhours.NewSplitter(time.Now())
+	scanner := bufio.NewScanner(bytes.NewReader(b))
 
-	var (
-		l        []byte
-		sb       strings.Builder
-		ok1, ok2 bool
-	)
+	for scanner.Scan() {
+		line := scanner.Text()
 
-	for {
-		l, _, err = r.ReadLine()
+		ok1, err := s.Match(line)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-
-			t.Errorf("read err %q: %v", string(l), err)
-
-			continue
+			t.Errorf("match err %q: %v", line, err)
 		}
 
-		ok1, err = s.Match(string(l))
+		_, ok2, err := s.Split(line)
 		if err != nil {
-			t.Errorf("split err %q: %v", string(l), err)
-		}
-
-		_, ok2, err = s.Split(string(l))
-		if err != nil {
-			t.Errorf("split err %q: %v", string(l), err)
+			t.Errorf("split err %q: %v", line, err)
 		}
 
 		if ok1 != ok2 {
 			t.Fatal("testdata: split.ok != match.ok")
 		}
 
-		sb.Reset()
-		sb.WriteString(string(l))
-		sb.WriteRune('\n')
-		sb.WriteRune('=')
-		sb.WriteRune('\n')
-		sb.WriteString(s.String())
-		sb.WriteRune('\n')
+		t.Log(line + "\n=\n" + s.String())
+	}
 
-		fmt.Println(sb.String())
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestREADME(_ *testing.T) {
+func Example() { //nolint:testableexamples
 	now := time.Now()
+
 	fmt.Printf("%s\n\n", now.Format("Mon, 02 Jan 15:04"))
 
 	ohs := openhours.NewSplitter(now)
@@ -265,6 +297,7 @@ func TestREADME(_ *testing.T) {
 		if err != nil {
 			log.Fatal(err)
 		}
+
 		fmt.Printf("%s\n%s %v\n\n", v, ohs, ok)
 	}
 }
@@ -277,7 +310,7 @@ func BenchmarkSplit(b *testing.B) {
 
 	var ok bool
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, ok, _ = ohs.Split("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
 		blackhole = ok
 	}
@@ -289,8 +322,30 @@ func BenchmarkMatch(b *testing.B) {
 
 	var ok bool
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		ok, _ = ohs.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
+		blackhole = ok
+	}
+}
+
+// BenchmarkMatchMemo simulates filtering a large pharmacy list where many
+// entries share the same layout string (realistic for chain pharmacies).
+func BenchmarkMatchMemo(b *testing.B) {
+	layouts := [...]string{
+		"Mo-Fr 08:00-20:00; Sa-Su 09:00-18:00",
+		"Mo-Su 08:00-22:00",
+		"Mo-Fr 09:00-17:00",
+		"24/7",
+		"Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30",
+	}
+
+	now := time.Now()
+	ohs := openhours.NewSplitter(now)
+
+	var ok bool
+
+	for i := range b.N {
+		ok, _ = ohs.Match(layouts[i%len(layouts)])
 		blackhole = ok
 	}
 }

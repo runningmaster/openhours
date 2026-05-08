@@ -2,149 +2,305 @@ package openhours
 
 import (
 	"errors"
-	"sort"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
+// ErrInvalidLayout is returned by Split and Match when the layout string is malformed.
 var ErrInvalidLayout = errors.New("openhours: invalid input layout string")
 
-// Splitter contains auxiliary buffers and fields for parsing 'opening_hours'
-// layout string.
-type Splitter struct {
-	output []time.Time
+const (
+	minsPerHour = 60
+	minsPerDay  = 24 * minsPerHour // 1440
+	minsPerWeek = 7 * minsPerDay   // 10080
+	daysPerWeek = 7
+)
 
-	bufDay  []int
-	bufHour []rune
-	bufMin  []rune
-
-	t        time.Time
-	tYear    int
-	tMonth   time.Month
-	tDay     int
-	tWeekDay time.Weekday
-	tHour    int
-	tMin     int
-	tSec     int
-	tNSec    int
-	tLoc     *time.Location
+// weekInterval stores an open/close pair as minutes from Monday 00:00.
+// close may exceed weekMins for Sunday→Monday overnight intervals.
+type weekInterval struct {
+	open  int
+	close int
 }
 
-// NewSplitter creates a new Splitter.
-func NewSplitter(t time.Time) *Splitter {
-	const (
-		len2  = 2
-		len7  = 7
-		len14 = 14
-	)
+//nolint:gochecknoglobals
+var (
+	cacheMu sync.RWMutex
+	cache   = make(map[string][]weekInterval)
+)
 
+// Splitter parses and evaluates 'opening_hours' layout strings against a fixed
+// reference time. Parsed results are memoized in a package-level cache shared
+// across all Splitter instances. The cache is populated on first parse of each
+// unique layout string and is never invalidated.
+// A Splitter must not be used concurrently from multiple goroutines.
+type Splitter struct {
+	t      time.Time
+	ivs    []weekInterval // last parsed result (read-only slice from global cache)
+	output []time.Time    // pre-allocated buffer for Split return value
+}
+
+// NewSplitter returns a new Splitter with t as the reference time for open/closed evaluation.
+func NewSplitter(t time.Time) *Splitter {
 	return &Splitter{
-		output:   make([]time.Time, len14),
-		bufDay:   make([]int, len7),
-		bufHour:  make([]rune, len2),
-		bufMin:   make([]rune, len2),
-		t:        t,
-		tYear:    t.Year(),
-		tMonth:   t.Month(),
-		tDay:     t.Day(),
-		tWeekDay: t.Weekday(),
-		tHour:    t.Hour(),
-		tMin:     t.Minute(),
-		tSec:     0,
-		tNSec:    0,
-		tLoc:     t.Location(),
+		t:      t,
+		output: make([]time.Time, 0, 14), //nolint:mnd
 	}
 }
 
-func (s *Splitter) reset() {
-	s.output = s.output[:0]
-	s.bufDay = s.bufDay[:0]
-	s.bufHour = s.bufHour[:0]
-	s.bufMin = s.bufMin[:0]
+// Reset updates the reference time, allowing Splitter reuse (e.g. via sync.Pool).
+func (s *Splitter) Reset(t time.Time) {
+	s.t = t
 }
 
-func (s *Splitter) parse(layout string) error {
-	s.reset()
+// Match reports whether the reference time falls within the open hours described by layout.
+func (s *Splitter) Match(layout string) (bool, error) {
+	s.ivs = getOrParse(layout)
 
+	return matchWeek(s.ivs, weekMinutes(s.t)), nil
+}
+
+// Split parses layout and returns a sorted slice of open/close time boundaries
+// anchored to the week containing the reference time.
+// The second return value reports whether the reference time falls within open hours.
+// The returned slice is valid only until the next call to Split on the same Splitter;
+// copy it if longer retention is needed.
+func (s *Splitter) Split(layout string) ([]time.Time, bool, error) {
+	s.ivs = getOrParse(layout)
+	s.output = s.output[:0]
+
+	monday := mondayOf(s.t)
+
+	for _, iv := range s.ivs {
+		s.output = append(s.output,
+			minutesToTime(monday, iv.open),
+			closeToTime(monday, iv.close),
+		)
+	}
+
+	return s.output, matchWeek(s.ivs, weekMinutes(s.t)), nil
+}
+
+// String implements fmt.Stringer. Must be called after Split or Match.
+func (s *Splitter) String() string {
+	if len(s.ivs) == 0 {
+		return ""
+	}
+
+	monday := mondayOf(s.t)
+	tm := weekMinutes(s.t)
+
+	var (
+		lastDay int
+		sb      strings.Builder
+	)
+
+	for _, iv := range s.ivs {
+		openT := minutesToTime(monday, iv.open)
+		closeT := closeToTime(monday, iv.close)
+
+		d := openT.Day()
+
+		if d != lastDay {
+			if lastDay != 0 {
+				sb.WriteByte('\n')
+			}
+
+			sb.WriteString(openT.Format("Mon, 02 Jan 15:04"))
+
+			lastDay = d
+		} else {
+			sb.WriteByte(' ')
+			sb.WriteString(openT.Format("15:04"))
+		}
+
+		if isOpenAt(iv, tm) {
+			sb.WriteByte('*')
+		} else {
+			sb.WriteByte('-')
+		}
+
+		sb.WriteString(closeT.Format("15:04"))
+	}
+
+	return sb.String()
+}
+
+func matchWeek(ivs []weekInterval, tm int) bool {
+	for _, iv := range ivs {
+		if isOpenAt(iv, tm) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isOpenAt reports whether tm (minutes from Monday 00:00) falls within iv.
+// The second branch handles Sunday→Monday overnight intervals where close > weekMins.
+func isOpenAt(iv weekInterval, tm int) bool {
+	if iv.open <= tm && tm < iv.close {
+		return true
+	}
+
+	return iv.close > minsPerWeek && iv.open <= tm+minsPerWeek && tm+minsPerWeek < iv.close
+}
+
+// weekdayNum converts Go's time.Weekday (Sunday=0) to the 1-7 range used
+// internally (Monday=1 … Sunday=7).
+func weekday(wd time.Weekday) int {
+	if wd == time.Sunday {
+		return daysPerWeek
+	}
+
+	return int(wd)
+}
+
+func weekMinutes(t time.Time) int {
+	return (weekday(t.Weekday())-1)*minsPerDay + t.Hour()*minsPerHour + t.Minute()
+}
+
+func mondayOf(t time.Time) time.Time {
+	wd := weekday(t.Weekday())
+
+	return time.Date(t.Year(), t.Month(), t.Day()-(wd-1), 0, 0, 0, 0, t.Location())
+}
+
+func minutesToTime(monday time.Time, mins int) time.Time {
+	d := mins / minsPerDay
+	rem := mins % minsPerDay
+
+	return time.Date(monday.Year(), monday.Month(), monday.Day()+
+		d, rem/minsPerHour, rem%minsPerHour, 0, 0, monday.Location())
+}
+
+// closeToTime converts a close interval value to time.Time.
+// Close values stored as exact day boundaries (multiples of dayMins) represent
+// "end of day" and are displayed as 23:59 of that day rather than 00:00 of the next.
+// mins is always > 0 in practice; the guard is defensive.
+func closeToTime(monday time.Time, mins int) time.Time {
+	if mins > 0 && mins%minsPerDay == 0 {
+		d := mins/minsPerDay - 1
+
+		return time.Date(monday.Year(), monday.Month(), monday.Day()+d, 23, 59, 0, 0, monday.Location())
+	}
+
+	return minutesToTime(monday, mins)
+}
+
+func getOrParse(layout string) []weekInterval {
 	if layout == "24/7" {
 		layout = "Mo-Su"
 	}
 
-	dump := func(wd, day, h, m, ns int) {
-		if wd == 0 {
-			wd = 7
-		}
-		// shift month's day relative week's day
-		switch {
-		case day < wd:
-			day = s.tDay - (wd - day)
-		case day > wd:
-			day = s.tDay + (day - wd)
-		default:
-			day = s.tDay
-		}
+	cacheMu.RLock()
 
-		s.output = append(s.output, time.Date(s.tYear, s.tMonth,
-			day, h, m, 0, ns, s.tLoc),
-		)
+	ivs, ok := cache[layout]
+
+	cacheMu.RUnlock()
+
+	if ok {
+		return ivs
 	}
 
-	var wasSpan, wasDump bool
+	parsed := parse(layout)
 
-	const (
-		h23 = 23
-		h24 = 24
-		m59 = 59
-		s1  = 1
+	cacheMu.Lock()
+
+	existing, ok := cache[layout]
+	if !ok {
+		cache[layout] = parsed
+		ivs = parsed
+	} else {
+		ivs = existing
+	}
+
+	cacheMu.Unlock()
+
+	return ivs
+}
+
+func parse(layout string) []weekInterval { //nolint:gocognit,gocyclo,cyclop
+	var (
+		bufDay  = make([]int, 0, daysPerWeek)
+		bufHour = make([]rune, 0, 2)
+		bufMin  = make([]rune, 0, 2)
+
+		wasSpan, wasDump bool
+		prevOpenMinOfDay int
+
+		ivs []weekInterval
 	)
+
+	flushOpen := func(h, m int) {
+		prevOpenMinOfDay = h*minsPerHour + m
+	}
+
+	flushClose := func(hc, mc int) {
+		const h24 = 24
+
+		// 00:00 and 24:00 as close time mean "end of day": store as dayMins (exclusive)
+		// so that the last minute (23:59) is correctly included in the open window.
+		var closeMinOfDay int
+		if (hc == 0 && mc == 0) || hc == h24 {
+			closeMinOfDay = minsPerDay
+		} else {
+			closeMinOfDay = hc*minsPerHour + mc
+		}
+
+		isOvernight := closeMinOfDay < prevOpenMinOfDay
+
+		for _, day := range bufDay {
+			base := (day - 1) * minsPerDay
+			openMin := base + prevOpenMinOfDay
+
+			closeBase := base
+
+			if isOvernight {
+				closeBase = (day % daysPerWeek) * minsPerDay
+				if closeBase < base {
+					closeBase += daysPerWeek
+				}
+			}
+
+			ivs = append(ivs, weekInterval{open: openMin, close: closeBase + closeMinOfDay})
+		}
+	}
+
+	appendDigit := func(r rune) bool {
+		if len(bufHour) < 2 {
+			bufHour = append(bufHour, r)
+
+			return false
+		}
+
+		bufMin = append(bufMin, r)
+
+		return len(bufMin) == 2
+	}
 
 	for i, r := range layout {
 		if '0' <= r && r <= '9' {
-			switch len(s.bufHour) {
-			case 0, 1:
-				s.bufHour = append(s.bufHour, r)
-
-				continue // =>
+			if !appendDigit(r) {
+				continue
 			}
 
-			switch len(s.bufMin) {
-			case 0, 1:
-				s.bufMin = append(s.bufMin, r)
-				if len(s.bufMin) == 1 {
-					continue // =>
-				}
-			}
-
-			h := rtoi(s.bufHour)
-			m := rtoi(s.bufMin)
-
-			ns := 0
+			h, m := rtoi(bufHour), rtoi(bufMin)
 
 			if wasSpan {
-				switch {
-				// fix -00:00
-				case h == 0 && m == 0:
-					h, m = h23, m59
-				// fix -24:00
-				case h == h24:
-					h, m = h23, m59
-				}
-
-				ns = 1 // ns workaround for no need sort, see setMatchIndex
+				flushClose(h, m)
+			} else {
+				flushOpen(h, m)
 			}
 
-			wd := int(s.tWeekDay)
-
-			for _, day := range s.bufDay {
-				dump(wd, day, h, m, ns)
-			}
-
-			s.bufHour = s.bufHour[:0]
-			s.bufMin = s.bufMin[:0]
+			bufHour = bufHour[:0]
+			bufMin = bufMin[:0]
 			wasSpan = false
 			wasDump = true
 
-			continue // =>
+			continue
 		}
 
 		if 'F' <= r && r <= 'W' || 'f' <= r && r <= 'w' {
@@ -189,31 +345,30 @@ func (s *Splitter) parse(layout string) error {
 				}
 			}
 
-			switch weekDay {
+			switch weekDay { //nolint:exhaustive
 			case -1:
-				continue // =>
+				continue
 			case 0:
-				weekDay = 7
+				weekDay = daysPerWeek // remap Sunday from Go's 0 to our 1-7 range
 			}
 
 			if wasDump {
-				s.bufDay = s.bufDay[:0]
+				bufDay = bufDay[:0]
 				wasDump = false
 			}
 
-			switch l, wd := len(s.bufDay), int(weekDay); {
-			case wasSpan && l > 0 && s.bufDay[l-1] < wd:
-				// expand days in buffer to weekDay
-				for i := s.bufDay[l-1] + 1; i <= wd; i++ {
-					s.bufDay = append(s.bufDay, i)
+			switch l, wd := len(bufDay), int(weekDay); {
+			case wasSpan && l > 0 && bufDay[l-1] < wd:
+				for d := bufDay[l-1] + 1; d <= wd; d++ {
+					bufDay = append(bufDay, d)
 				}
 
 				wasSpan = false
 			default:
-				s.bufDay = append(s.bufDay, wd)
+				bufDay = append(bufDay, wd)
 			}
 
-			continue // =>
+			continue
 		}
 
 		if r == '-' {
@@ -221,113 +376,27 @@ func (s *Splitter) parse(layout string) error {
 		}
 	}
 
-	if len(s.output)%2 != 0 {
-		return ErrInvalidLayout
+	if !wasDump && len(bufDay) > 0 {
+		flushOpen(0, 0)
+		flushClose(0, 0)
 	}
 
-	if !wasDump && len(s.bufDay) > 0 {
-		wd := int(s.tWeekDay)
-		for _, day := range s.bufDay {
-			dump(wd, day, 0, 0, 0)
-			dump(wd, day, h23, m59, s1)
-		}
-	}
-
-	return nil
-}
-
-func (s *Splitter) matchIndex() int {
-	for i := 0; i < len(s.output); i++ {
-		// ns workaround for no need sort
-		if s.output[i].Weekday() != s.tWeekDay || s.output[i].Nanosecond() != 1 {
-			continue
+	slices.SortFunc(ivs, func(a, b weekInterval) int {
+		if c := a.open - b.open; c != 0 {
+			return c
 		}
 
-		if s.output[i].After(s.t) {
-			return i
-		}
-	}
-
-	return -1
-}
-
-// Split partitions a layout string into a sorted slice of time.Time.
-// Also it returns true in second param if initial time is in the open hours.
-func (s *Splitter) Split(layout string) ([]time.Time, bool, error) {
-	err := s.parse(layout)
-	if err != nil {
-		return nil, false, err
-	}
-
-	sort.Slice(s.output, func(i, j int) bool {
-		return s.output[i].Before(s.output[j])
+		return a.close - b.close
 	})
 
-	return s.output, s.matchIndex() > -1, nil
-}
-
-// Match returns true in second param if initial time is in the open hours.
-func (s *Splitter) Match(layout string) (bool, error) {
-	err := s.parse(layout)
-	if err != nil {
-		return false, err
-	}
-
-	return s.matchIndex() > -1, nil
-}
-
-// String implements fmt.Stringer to be printed for testing purposes.
-// It invokes after Split.
-func (s *Splitter) String() string {
-	if len(s.output) == 0 {
-		return ""
-	}
-
-	var (
-		day int
-		sb  strings.Builder
-	)
-
-	matchIndex := s.matchIndex()
-
-	for i, v := range s.output {
-		if day != v.Day() {
-			if i != 0 {
-				sb.WriteRune('\n')
-			}
-
-			sb.WriteString(v.Format("Mon, 02 Jan"))
-			sb.WriteRune(' ')
-			sb.WriteString(v.Format("15:04"))
-		} else {
-			switch i % 2 {
-			case 0:
-				sb.WriteRune(' ')
-				sb.WriteString(v.Format("15:04"))
-			case 1:
-				if matchIndex == i {
-					sb.WriteRune('*') // it is open
-				} else {
-					sb.WriteRune('-')
-				}
-				sb.WriteString(v.Format("15:04"))
-			}
-		}
-
-		day = v.Day()
-	}
-
-	return sb.String()
+	return ivs
 }
 
 func rtoi(r []rune) int {
 	num := 0
 
-	for i, r := range r {
-		num += int(r - '0')
-		if i == 0 {
-			num *= 10
-		}
+	for _, v := range r {
+		num = num*10 + int(v-'0')
 	}
 
 	return num
