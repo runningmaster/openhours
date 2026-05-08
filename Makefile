@@ -27,13 +27,13 @@ test: vet
 
 
 ## bench: runs `go test` with benchmarks
-bench: lint
+bench: vet
 	@go test -bench . -benchmem -run=^$
 .PHONY: bench
 
 
 ## escape: runs `go build` with escape analysis
-escape: lint
+escape: vet
 	@go build -gcflags=-m 2>&1
 .PHONY: escape
 
