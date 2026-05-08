@@ -260,12 +260,16 @@ func TestTestdata(t *testing.T) {
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		ok1, err := s.Match(line)
+		var ok1 bool
+
+		ok1, err = s.Match(line)
 		if err != nil {
 			t.Errorf("match err %q: %v", line, err)
 		}
 
-		_, ok2, err := s.Split(line)
+		var ok2 bool
+
+		_, ok2, err = s.Split(line)
 		if err != nil {
 			t.Errorf("split err %q: %v", line, err)
 		}
@@ -277,7 +281,8 @@ func TestTestdata(t *testing.T) {
 		t.Log(line + "\n=\n" + s.String())
 	}
 
-	if err := scanner.Err(); err != nil {
+	err = scanner.Err()
+	if err != nil {
 		t.Fatal(err)
 	}
 }
