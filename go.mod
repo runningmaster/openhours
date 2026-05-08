@@ -1,3 +1,3 @@
 module github.com/runningmaster/openhours
 
-go 1.19
+go 1.26.2
