@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"log"
 	"os"
 	"testing"
 	"time"
@@ -155,20 +154,13 @@ func TestSplitMatch(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.lstr, func(t *testing.T) {
-			_, ok, err := ohs.Split(test.lstr)
-			if err != nil {
-				t.Fatal(err)
-			}
+			_, ok := ohs.Split(test.lstr)
 
 			if ok != test.want {
 				t.Errorf("split: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
 
-			ok, err = ohs.Match(test.lstr)
-			if err != nil {
-				t.Fatal(err)
-			}
-
+			ok = ohs.Match(test.lstr)
 			if ok != test.want {
 				t.Errorf("match: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
@@ -181,20 +173,13 @@ func TestSplitMatch(t *testing.T) {
 
 	for _, test := range eodTests {
 		t.Run("eod/"+test.lstr, func(t *testing.T) {
-			_, ok, err := ohs.Split(test.lstr)
-			if err != nil {
-				t.Fatal(err)
-			}
+			_, ok := ohs.Split(test.lstr)
 
 			if ok != test.want {
 				t.Errorf("split eod: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
 
-			ok, err = ohs.Match(test.lstr)
-			if err != nil {
-				t.Fatal(err)
-			}
-
+			ok = ohs.Match(test.lstr)
 			if ok != test.want {
 				t.Errorf("match eod: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
@@ -234,10 +219,7 @@ Fri, 11 Nov 00:00-23:59`,
 
 	for _, test := range tests {
 		t.Run(test.lstr, func(t *testing.T) {
-			_, _, err := ohs.Split(test.lstr)
-			if err != nil {
-				t.Fatal(err)
-			}
+			_, _ = ohs.Split(test.lstr)
 
 			if ohs.String() != test.want {
 				t.Errorf("case %q: got %v, want %v", test.lstr, ohs.String(), test.want)
@@ -260,19 +242,9 @@ func TestTestdata(t *testing.T) {
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		var ok1 bool
+		ok1 := s.Match(line)
 
-		ok1, err = s.Match(line)
-		if err != nil {
-			t.Errorf("match err %q: %v", line, err)
-		}
-
-		var ok2 bool
-
-		_, ok2, err = s.Split(line)
-		if err != nil {
-			t.Errorf("split err %q: %v", line, err)
-		}
+		_, ok2 := s.Split(line)
 
 		if ok1 != ok2 {
 			t.Fatal("testdata: split.ok != match.ok")
@@ -298,10 +270,7 @@ func Example() { //nolint:testableexamples
 		"Mo-Tu, Fr 08:00-12:00 14:00-17:00 We 08:00-08:00 Th, Sa-Su 00:00-00:00",
 		"Mo-Th 08:00-17:00; Fr 08:00-18:00; Sa 08:00-13:00",
 	} {
-		_, ok, err := ohs.Split(v)
-		if err != nil {
-			log.Fatal(err)
-		}
+		_, ok := ohs.Split(v)
 
 		fmt.Printf("%s\n%s %v\n\n", v, ohs, ok)
 	}
@@ -316,7 +285,7 @@ func BenchmarkSplit(b *testing.B) {
 	var ok bool
 
 	for range b.N {
-		_, ok, _ = ohs.Split("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
+		_, ok = ohs.Split("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
 		blackhole = ok
 	}
 }
@@ -328,7 +297,7 @@ func BenchmarkMatch(b *testing.B) {
 	var ok bool
 
 	for range b.N {
-		ok, _ = ohs.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
+		ok = ohs.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
 		blackhole = ok
 	}
 }
@@ -350,7 +319,7 @@ func BenchmarkMatchMemo(b *testing.B) {
 	var ok bool
 
 	for i := range b.N {
-		ok, _ = ohs.Match(layouts[i%len(layouts)])
+		ok = ohs.Match(layouts[i%len(layouts)])
 		blackhole = ok
 	}
 }

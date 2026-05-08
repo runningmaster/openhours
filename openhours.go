@@ -1,15 +1,11 @@
 package openhours
 
 import (
-	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 )
-
-// ErrInvalidLayout is returned by Split and Match when the layout string is malformed.
-var ErrInvalidLayout = errors.New("openhours: invalid input layout string")
 
 const (
 	minsPerHour = 60
@@ -27,8 +23,8 @@ type weekInterval struct {
 
 //nolint:gochecknoglobals
 var (
-	cacheMu sync.RWMutex
 	cache   = make(map[string][]weekInterval)
+	cacheMu sync.RWMutex
 )
 
 // Splitter parses and evaluates 'opening_hours' layout strings against a fixed
@@ -56,18 +52,20 @@ func (s *Splitter) Reset(t time.Time) {
 }
 
 // Match reports whether the reference time falls within the open hours described by layout.
-func (s *Splitter) Match(layout string) (bool, error) {
+// An unparsable layout yields false — no error is returned.
+func (s *Splitter) Match(layout string) bool {
 	s.ivs = getOrParse(layout)
 
-	return matchWeek(s.ivs, weekMinutes(s.t)), nil
+	return matchWeek(s.ivs, weekMinutes(s.t))
 }
 
 // Split parses layout and returns a sorted slice of open/close time boundaries
 // anchored to the week containing the reference time.
 // The second return value reports whether the reference time falls within open hours.
+// An unparsable layout yields an empty slice and false — no error is returned.
 // The returned slice is valid only until the next call to Split on the same Splitter;
 // copy it if longer retention is needed.
-func (s *Splitter) Split(layout string) ([]time.Time, bool, error) {
+func (s *Splitter) Split(layout string) ([]time.Time, bool) {
 	s.ivs = getOrParse(layout)
 	s.output = s.output[:0]
 
@@ -80,7 +78,7 @@ func (s *Splitter) Split(layout string) ([]time.Time, bool, error) {
 		)
 	}
 
-	return s.output, matchWeek(s.ivs, weekMinutes(s.t)), nil
+	return s.output, matchWeek(s.ivs, weekMinutes(s.t))
 }
 
 // String implements fmt.Stringer. Must be called after Split or Match.
