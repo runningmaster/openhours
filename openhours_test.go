@@ -150,17 +150,17 @@ func TestSplitMatch(t *testing.T) {
 
 	// Wednesday 17:30
 	now = time.Date(now.Year(), now.Month(), day, 17, 30, 0, 0, now.Location())
-	ohs := openhours.NewSplitter(now)
 
 	for _, test := range tests {
 		t.Run(test.lstr, func(t *testing.T) {
-			_, ok := ohs.Split(test.lstr)
+			l, _ := openhours.Parse(test.lstr)
 
+			_, ok := l.Split(now)
 			if ok != test.want {
 				t.Errorf("split: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
 
-			ok = ohs.Match(test.lstr)
+			ok = l.Match(now)
 			if ok != test.want {
 				t.Errorf("match: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
@@ -169,17 +169,17 @@ func TestSplitMatch(t *testing.T) {
 
 	// Wednesday 23:59 — the last minute of day must be included in open window.
 	eodNow := time.Date(now.Year(), now.Month(), day, 23, 59, 0, 0, now.Location())
-	ohs.Reset(eodNow)
 
 	for _, test := range eodTests {
 		t.Run("eod/"+test.lstr, func(t *testing.T) {
-			_, ok := ohs.Split(test.lstr)
+			l, _ := openhours.Parse(test.lstr)
 
+			_, ok := l.Split(eodNow)
 			if ok != test.want {
 				t.Errorf("split eod: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
 
-			ok = ohs.Match(test.lstr)
+			ok = l.Match(eodNow)
 			if ok != test.want {
 				t.Errorf("match eod: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
@@ -215,14 +215,16 @@ Fri, 11 Nov 00:00-23:59`,
 	// November 13 17:30
 	now := time.Now()
 	now = time.Date(2022, time.November, 13, 17, 30, 0, 0, now.Location())
-	ohs := openhours.NewSplitter(now)
 
 	for _, test := range tests {
 		t.Run(test.lstr, func(t *testing.T) {
-			_, _ = ohs.Split(test.lstr)
+			l, err := openhours.Parse(test.lstr)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", test.lstr, err)
+			}
 
-			if ohs.String() != test.want {
-				t.Errorf("case %q: got %v, want %v", test.lstr, ohs.String(), test.want)
+			if got := l.Format(now); got != test.want {
+				t.Errorf("case %q:\ngot  %v\nwant %v", test.lstr, got, test.want)
 			}
 		})
 	}
@@ -236,21 +238,21 @@ func TestTestdata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := openhours.NewSplitter(time.Now())
+	now := time.Now()
 	scanner := bufio.NewScanner(bytes.NewReader(b))
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		l, _ := openhours.Parse(line)
 
-		ok1 := s.Match(line)
-
-		_, ok2 := s.Split(line)
+		ok1 := l.Match(now)
+		_, ok2 := l.Split(now)
 
 		if ok1 != ok2 {
 			t.Fatal("testdata: split.ok != match.ok")
 		}
 
-		t.Log(line + "\n=\n" + s.String())
+		t.Log(line + "\n=\n" + l.Format(now))
 	}
 
 	err = scanner.Err()
@@ -264,15 +266,66 @@ func Example() { //nolint:testableexamples
 
 	fmt.Printf("%s\n\n", now.Format("Mon, 02 Jan 15:04"))
 
-	ohs := openhours.NewSplitter(now)
-
 	for _, v := range []string{
 		"Mo-Tu, Fr 08:00-12:00 14:00-17:00 We 08:00-08:00 Th, Sa-Su 00:00-00:00",
 		"Mo-Th 08:00-17:00; Fr 08:00-18:00; Sa 08:00-13:00",
 	} {
-		_, ok := ohs.Split(v)
+		l, _ := openhours.Parse(v)
 
-		fmt.Printf("%s\n%s %v\n\n", v, ohs, ok)
+		fmt.Printf("%s\n%s %v\n\n", v, l.Format(now), l.Match(now))
+	}
+}
+
+func TestUntil(t *testing.T) {
+	loc := time.Now().Location()
+	d := func(day, hour, min int) time.Time {
+		return time.Date(2022, time.November, day, hour, min, 0, 0, loc)
+	}
+
+	// November 2022: Mon 7 … Sun 13.
+	tests := []struct {
+		lstr      string
+		at        time.Time
+		wantOpen  bool
+		wantBound time.Time
+	}{
+		// Open: returns close time of current interval.
+		{"Mo-Fr 09:00-20:00", d(9, 17, 30), true, d(9, 20, 0)},
+
+		// Open: midnight close returned as 00:00 next day (not 23:59).
+		{"Mo 09:00-00:00", d(7, 17, 30), true, d(8, 0, 0)},
+
+		// Closed: next opening later this week.
+		{"Mo-Fr 09:00-17:00", d(9, 17, 30), false, d(10, 9, 0)},
+
+		// Closed: no more openings this week, wraps to next Monday.
+		{"Mo-Fr 09:00-17:00", d(12, 20, 0), false, d(14, 9, 0)},
+
+		// Overnight Sunday→Monday: open via overflow branch.
+		{"Su 22:00-02:00", d(7, 1, 0), true, d(7, 2, 0)},
+
+		// Overnight Sunday→Monday: closed after the interval, next is this Sunday.
+		{"Su 22:00-02:00", d(7, 3, 0), false, d(13, 22, 0)},
+
+		// Empty layout: always closed, zero boundary.
+		{"", d(9, 17, 30), false, time.Time{}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.lstr+"@"+test.at.Format("Mon 15:04"), func(t *testing.T) {
+			l, _ := openhours.Parse(test.lstr)
+			open, bound := l.Until(test.at)
+
+			if open != test.wantOpen {
+				t.Errorf("open: got %v, want %v", open, test.wantOpen)
+			}
+
+			if !bound.Equal(test.wantBound) {
+				t.Errorf("boundary: got %v, want %v",
+					bound.Format("Mon 02 Jan 15:04"),
+					test.wantBound.Format("Mon 02 Jan 15:04"))
+			}
+		})
 	}
 }
 
@@ -280,24 +333,23 @@ var blackhole bool //nolint:gochecknoglobals
 
 func BenchmarkSplit(b *testing.B) {
 	now := time.Now()
-	ohs := openhours.NewSplitter(now)
+	l, _ := openhours.Parse("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
 
 	var ok bool
 
 	for range b.N {
-		_, ok = ohs.Split("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
+		_, ok = l.Split(now)
 		blackhole = ok
 	}
 }
 
 func BenchmarkMatch(b *testing.B) {
 	now := time.Now()
-	ohs := openhours.NewSplitter(now)
 
 	var ok bool
 
 	for range b.N {
-		ok = ohs.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
+		ok = openhours.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30", now)
 		blackhole = ok
 	}
 }
@@ -314,12 +366,11 @@ func BenchmarkMatchMemo(b *testing.B) {
 	}
 
 	now := time.Now()
-	ohs := openhours.NewSplitter(now)
 
 	var ok bool
 
 	for i := range b.N {
-		ok = ohs.Match(layouts[i%len(layouts)])
+		ok = openhours.Match(layouts[i%len(layouts)], now)
 		blackhole = ok
 	}
 }
