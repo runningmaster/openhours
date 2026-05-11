@@ -109,8 +109,9 @@ func (s *Splitter) Split(layout string) ([]time.Time, bool) {
 	monday := mondayOf(s.t)
 
 	for _, iv := range s.ivs {
-		s.output = append(s.output,
-			minutesToTime(monday, iv.open),
+		s.output = append(
+			s.output,
+			minsToTime(monday, iv.open),
 			closeToTime(monday, iv.close),
 		)
 	}
@@ -133,7 +134,7 @@ func (s *Splitter) String() string {
 	)
 
 	for _, iv := range s.ivs {
-		openT := minutesToTime(monday, iv.open)
+		openT := minsToTime(monday, iv.open)
 		closeT := closeToTime(monday, iv.close)
 
 		d := openT.Day()
@@ -203,7 +204,7 @@ func mondayOf(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day()-(wd-1), 0, 0, 0, 0, t.Location())
 }
 
-func minutesToTime(monday time.Time, mins int) time.Time {
+func minsToTime(monday time.Time, mins int) time.Time {
 	d := mins / minsPerDay
 	rem := mins % minsPerDay
 
@@ -222,7 +223,7 @@ func closeToTime(monday time.Time, mins int) time.Time {
 		return time.Date(monday.Year(), monday.Month(), monday.Day()+d, 23, 59, 0, 0, monday.Location())
 	}
 
-	return minutesToTime(monday, mins)
+	return minsToTime(monday, mins)
 }
 
 func getOrParse(layout string) []weekInterval {
@@ -307,6 +308,7 @@ func parse(layout string) []weekInterval { //nolint:gocognit,gocyclo,cyclop
 		// 00:00 and 24:00 as close time mean "end of day": store as dayMins (exclusive)
 		// so that the last minute (23:59) is correctly included in the open window.
 		var closeMinOfDay int
+
 		if (hc == 0 && mc == 0) || hc == h24 {
 			closeMinOfDay = minsPerDay
 		} else {
@@ -445,7 +447,8 @@ func parse(layout string) []weekInterval { //nolint:gocognit,gocyclo,cyclop
 	}
 
 	slices.SortFunc(ivs, func(a, b weekInterval) int {
-		if c := a.open - b.open; c != 0 {
+		c := a.open - b.open
+		if c != 0 {
 			return c
 		}
 
