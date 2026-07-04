@@ -2,6 +2,34 @@
 
 Go parser and evaluator for [OpenStreetMap `opening_hours`](https://wiki.openstreetmap.org/wiki/Key:opening_hours) strings.
 
+## Grammar
+
+A deliberately small, strictly validated subset of the OSM syntax:
+
+- **Days**: two-letter abbreviations `Mo Tu We Th Fr Sa Su` (case-insensitive),
+  lists (`Mo, We, Fr`) and ranges (`Mo-Fr`); ranges may wrap the week end
+  (`Fr-Mo` = Fr, Sa, Su, Mo).
+- **Times**: `H:MM` or `HH:MM`, hour ≤ 24, minutes ≤ 59; `24:00` (and `00:00`)
+  as a close time mean end of day; a close earlier than its open spans
+  midnight (`Su 22:00-02:00`).
+- **Rules**: a day group followed by one or more `open-close` intervals
+  (`Mo-Fr 08:00-13:00 14:00-18:00`); several groups follow each other,
+  separated by whitespace, `,` or `;`. A trailing day group without times
+  means open the whole day. `24/7` (alone or with a rule tail) is an alias
+  for `Mo-Su`.
+
+**Strict where it matters, lenient where it doesn't.** Malformed *time syntax
+and structure* fail `Parse` with `ErrInvalidLayout` (wrapped with the reason
+and byte offset) instead of silently producing a plausible-but-wrong schedule —
+the worst failure mode for an "open now" filter: out-of-range clock values,
+missing `:`, an open time without its close, two times without `-`. Unknown
+*words* (`PH off`, localized labels) are transparent noise, so real-world
+feeds still parse. Not supported: month/date ranges, week numbers, public
+holidays, sunrise/sunset.
+
+Validate at ingest with `Parse`; the package-level `Match` never returns an
+error — an unparsable layout simply never matches.
+
 ## Usage
 
 ### Batch matching (hot path)

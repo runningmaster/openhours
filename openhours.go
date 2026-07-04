@@ -2,28 +2,43 @@ package openhours
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Layout holds a pre-parsed opening-hours schedule. The zero value is valid
 // but will never match. Use Parse to obtain a Layout from a string.
 type Layout struct{ ivs []weekInterval }
 
-// ErrInvalidLayout is returned by Parse when the layout string contains no
-// recognisable schedule entries.
+// ErrInvalidLayout is returned by Parse when the layout string is malformed or
+// contains no recognisable schedule entries. Errors returned by Parse wrap it,
+// adding the exact reason and byte offset; test with errors.Is.
 var ErrInvalidLayout = errors.New("openhours: invalid layout")
 
 // Parse compiles a layout string into a Layout for repeated evaluation.
 // Unlike the package-level Match, Parse does not use the global cache;
 // the caller owns the returned Layout value.
+//
+// Parse is STRICT about time syntax and structure — a malformed schedule fails
+// loudly instead of silently producing a plausible-but-wrong schedule (the
+// worst failure mode for an "open now" filter). Times are H:MM or HH:MM with
+// hour <= 24 and minute <= 59 (24:00 only as a close), every open time must be
+// joined to its close with '-', and a time needs a preceding day group.
+// Unknown WORDS, however, are ignored as noise ("PH off", localized labels),
+// and the ',' ';' separators are transparent, so real-world
+// OpenStreetMap-ish inputs still parse. A trailing day group without times
+// means "open the whole day" (OSM semantics), and "24/7" (alone or with a
+// trailing rule tail) is an alias for Mo-Su.
 func Parse(layout string) (Layout, error) {
-	ivs := parse(layout)
-	if len(ivs) == 0 {
-		return Layout{}, ErrInvalidLayout
+	ivs, err := parse(layout)
+	if err != nil {
+		return Layout{}, err
 	}
 
 	return Layout{ivs: ivs}, nil
@@ -94,7 +109,9 @@ func (l Layout) Format(t time.Time) string {
 }
 
 // Until returns the nearest open/close boundary after t.
-// If t falls within an open interval, open is true and boundary is when it closes.
+// If t falls within an open interval, open is true and boundary is when the
+// UNION of overlapping/adjacent intervals containing t closes — a schedule like
+// "Mo 08:00-12:00 12:00-20:00" reports 20:00 at 09:00, not the 12:00 seam.
 // If t falls in a gap, open is false and boundary is when it next opens.
 // boundary is the zero Time if the schedule has no intervals.
 // Note: boundary is the exact transition instant — a midnight close is 00:00, not 23:59.
@@ -106,14 +123,13 @@ func (l Layout) Until(t time.Time) (open bool, boundary time.Time) {
 	tm := weekMinutes(t)
 	monday := mondayOf(t)
 
-	for _, iv := range l.ivs {
-		if iv.open <= tm && tm < iv.close {
-			return true, minsToTime(monday, iv.close)
-		}
-		// Overnight Sunday→Monday: close exceeds minsPerWeek; fold back to this week's Monday.
-		if iv.close > minsPerWeek && iv.open <= tm+minsPerWeek && tm+minsPerWeek < iv.close {
-			return true, minsToTime(monday, iv.close-minsPerWeek)
-		}
+	if end, ok := unionEnd(l.ivs, tm); ok {
+		return true, minsToTime(monday, end)
+	}
+
+	// Overnight Sunday→Monday: close exceeds minsPerWeek; fold back to this week's Monday.
+	if end, ok := unionEnd(l.ivs, tm+minsPerWeek); ok {
+		return true, minsToTime(monday, end-minsPerWeek)
 	}
 
 	// Closed: first interval that opens later this week.
@@ -125,6 +141,36 @@ func (l Layout) Until(t time.Time) (open bool, boundary time.Time) {
 
 	// Nothing opens later this week; wrap to next week's first interval.
 	return false, minsToTime(monday, l.ivs[0].open+minsPerWeek)
+}
+
+// unionEnd returns the close of the union of intervals covering tm: starting
+// from the widest interval containing tm, it keeps extending the boundary while
+// another interval overlaps or touches it. Reports false when tm is not open.
+func unionEnd(ivs []weekInterval, tm int) (int, bool) {
+	end := -1
+
+	for _, iv := range ivs {
+		if iv.open <= tm && tm < iv.close && iv.close > end {
+			end = iv.close
+		}
+	}
+
+	if end < 0 {
+		return 0, false
+	}
+
+	for extended := true; extended; {
+		extended = false
+
+		for _, iv := range ivs {
+			if iv.open <= end && iv.close > end {
+				end = iv.close
+				extended = true
+			}
+		}
+	}
+
+	return end, true
 }
 
 // Match reports whether t falls within the open hours described by layout.
@@ -178,8 +224,8 @@ func init() { //nolint: gochecknoinits
 }
 
 // SetCacheSize sets the maximum number of distinct layout strings held in the
-// package-level parse cache. It must be called before the first call to Match,
-// Split, or NewSplitter; later calls have no effect once the cache is initialised.
+// package-level parse cache. It must be called before the first call to Match;
+// later calls have no effect once the cache is initialised.
 func SetCacheSize(n int) {
 	if n < 1 {
 		n = defaultCacheSize
@@ -199,10 +245,6 @@ func initCache() {
 }
 
 func getOrParse(layout string) Layout {
-	if layout == "24/7" {
-		layout = "Mo-Su"
-	}
-
 	cacheMu.RLock()
 
 	idx, ok := cache[layout]
@@ -217,7 +259,10 @@ func getOrParse(layout string) Layout {
 
 	cacheMu.RUnlock()
 
-	parsed := Layout{ivs: parse(layout)}
+	// A malformed layout caches as the zero Layout, which never matches —
+	// the package-level Match stays error-free by contract.
+	ivs, _ := parse(layout)
+	parsed := Layout{ivs: ivs}
 
 	cacheMu.Lock()
 
@@ -256,44 +301,62 @@ func getOrParse(layout string) Layout {
 	return parsed
 }
 
-func parse(layout string) []weekInterval { //nolint:gocognit,gocyclo,cyclop
-	if layout == "24/7" {
-		layout = "Mo-Su"
+// alias247 rewrites a leading "24/7" token (alone, or followed by a rule tail
+// like "; PH off") to its "Mo-Su" full-week equivalent. Any other placement is
+// left to the parser, which rejects it as a malformed time.
+func alias247(layout string) string {
+	s := strings.TrimSpace(layout)
+
+	rest, ok := strings.CutPrefix(s, "24/7")
+	if !ok {
+		return layout
 	}
+
+	if rest != "" {
+		r, _ := utf8.DecodeRuneInString(rest)
+		if r != ' ' && r != '\t' && r != ';' && r != ',' {
+			return layout
+		}
+	}
+
+	return "Mo-Su" + rest
+}
+
+// parse compiles a layout string into sorted week intervals. Strictness
+// contract: time syntax and open-close structure are validated (see Parse);
+// unknown words and the ',' ';' separators are transparent noise. A group is a
+// day set plus the intervals that follow it; a day token after intervals starts
+// the next group; a trailing group without intervals emits full days.
+func parse(layout string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cyclop,funlen
+	s := alias247(layout)
 
 	var (
-		bufDay  = make([]int, 0, daysPerWeek)
-		bufHour = make([]rune, 0, 2)
-		bufMin  = make([]rune, 0, 2)
-
-		wasSpan, wasDump bool
-		prevOpenMinOfDay int
-
-		ivs []weekInterval
+		days      []int // current group's day set (1=Mo … 7=Su)
+		ivs       []weekInterval
+		openMin   = -1 // pending open time; -1 = none
+		wantClose bool // '-' consumed after the open time, close expected
+		dayRange  bool // '-' consumed after a day token, range end expected
+		lastDay   bool // previous meaningful token was a day (for '-' meaning)
+		haveTimes bool // current group already emitted intervals
 	)
 
-	flushOpen := func(h, m int) {
-		prevOpenMinOfDay = h*minsPerHour + m
-	}
-
-	flushClose := func(hc, mc int) {
+	// emit appends one interval per day of the current group, handling the
+	// 00:00/24:00 end-of-day sentinels and overnight (close < open) wraps.
+	emit := func(closeH, closeM int) {
 		const h24 = 24
 
-		// 00:00 and 24:00 as close time mean "end of day": store as dayMins (exclusive)
-		// so that the last minute (23:59) is correctly included in the open window.
 		var closeMinOfDay int
 
-		if (hc == 0 && mc == 0) || hc == h24 {
+		if (closeH == 0 && closeM == 0) || closeH == h24 {
 			closeMinOfDay = minsPerDay
 		} else {
-			closeMinOfDay = hc*minsPerHour + mc
+			closeMinOfDay = closeH*minsPerHour + closeM
 		}
 
-		isOvernight := closeMinOfDay < prevOpenMinOfDay
+		isOvernight := closeMinOfDay < openMin
 
-		for _, day := range bufDay {
+		for _, day := range days {
 			base := (day - 1) * minsPerDay
-			openMin := base + prevOpenMinOfDay
 
 			closeBase := base
 
@@ -304,120 +367,128 @@ func parse(layout string) []weekInterval { //nolint:gocognit,gocyclo,cyclop
 				}
 			}
 
-			ivs = append(ivs, weekInterval{open: openMin, close: closeBase + closeMinOfDay})
+			ivs = append(ivs, weekInterval{open: base + openMin, close: closeBase + closeMinOfDay})
 		}
 	}
 
-	appendDigit := func(r rune) bool {
-		if len(bufHour) < 2 {
-			bufHour = append(bufHour, r)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
 
-			return false
-		}
+		switch {
+		case unicode.IsLetter(r):
+			j := i
 
-		bufMin = append(bufMin, r)
+			for j < len(s) {
+				r2, sz := utf8.DecodeRuneInString(s[j:])
+				if !unicode.IsLetter(r2) {
+					break
+				}
 
-		return len(bufMin) == 2
-	}
-
-	for i, r := range layout {
-		if '0' <= r && r <= '9' {
-			if !appendDigit(r) {
-				continue
+				j += sz
 			}
 
-			h, m := rtoi(bufHour), rtoi(bufMin)
+			word := s[i:j]
+			i = j
 
-			if wasSpan {
-				flushClose(h, m)
+			wd := dayOf(word)
+			if wd == 0 {
+				continue // unknown word: transparent noise ("PH", "off", localized labels)
+			}
+
+			if openMin >= 0 || wantClose {
+				return nil, errAt(i, "dangling open time before day %q", word)
+			}
+
+			// A day token after a timed group starts the next group.
+			if haveTimes && !dayRange {
+				days = days[:0]
+				haveTimes = false
+			}
+
+			if dayRange {
+				if len(days) == 0 {
+					return nil, errAt(i, "day range with no start day")
+				}
+
+				days = expandRange(days, wd)
+				dayRange = false
 			} else {
-				flushOpen(h, m)
+				days = append(days, wd)
 			}
 
-			bufHour = bufHour[:0]
-			bufMin = bufMin[:0]
-			wasSpan = false
-			wasDump = true
+			lastDay = true
 
-			continue
-		}
-
-		if 'F' <= r && r <= 'W' || 'f' <= r && r <= 'w' {
-			var (
-				weekDay time.Weekday = -1
-				next    rune
-			)
-
-			if len(layout) > i+1 {
-				next = rune(layout[i+1])
+		case '0' <= r && r <= '9':
+			h, m, j, err := readTime(s, i)
+			if err != nil {
+				return nil, err
 			}
 
-			switch r {
-			case 'M', 'm':
-				switch next {
-				case 'o', 'O':
-					weekDay = time.Monday
-				}
-			case 'T', 't':
-				switch next {
-				case 'u', 'U':
-					weekDay = time.Tuesday
-				case 'h', 'H':
-					weekDay = time.Thursday
-				}
-			case 'W', 'w':
-				switch next {
-				case 'e', 'E':
-					weekDay = time.Wednesday
-				}
-			case 'F', 'f':
-				switch next {
-				case 'r', 'R':
-					weekDay = time.Friday
-				}
-			case 'S', 's':
-				switch next {
-				case 'a', 'A':
-					weekDay = time.Saturday
-				case 'u', 'U':
-					weekDay = time.Sunday
-				}
-			}
+			i = j
+			lastDay = false
 
-			switch weekDay { //nolint:exhaustive
-			case -1:
-				continue
-			case 0:
-				weekDay = daysPerWeek // remap Sunday from Go's 0 to our 1-7 range
-			}
+			switch {
+			case wantClose:
+				emit(h, m)
 
-			if wasDump {
-				bufDay = bufDay[:0]
-				wasDump = false
-			}
-
-			switch l, wd := len(bufDay), int(weekDay); {
-			case wasSpan && l > 0 && bufDay[l-1] < wd:
-				for d := bufDay[l-1] + 1; d <= wd; d++ {
-					bufDay = append(bufDay, d)
-				}
-
-				wasSpan = false
+				openMin = -1
+				wantClose = false
+				haveTimes = true
+			case openMin >= 0:
+				return nil, errAt(i, "expected '-' between open and close times")
 			default:
-				bufDay = append(bufDay, wd)
+				if len(days) == 0 {
+					return nil, errAt(i, "time without a preceding day group")
+				}
+
+				if dayRange {
+					return nil, errAt(i, "unfinished day range before time")
+				}
+
+				if h == maxHour {
+					return nil, errAt(i, "24:00 is valid only as a close time")
+				}
+
+				openMin = h*minsPerHour + m
 			}
 
-			continue
-		}
+		case r == '-':
+			switch {
+			case openMin >= 0 && !wantClose:
+				wantClose = true
+			case lastDay:
+				dayRange = true
+			default:
+				return nil, errAt(i, "unexpected '-'")
+			}
 
-		if r == '-' {
-			wasSpan = true
+			i += size
+
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == ',' || r == ';':
+			i += size
+
+		default:
+			return nil, errAt(i, "unexpected character %q", r)
 		}
 	}
 
-	if !wasDump && len(bufDay) > 0 {
-		flushOpen(0, 0)
-		flushClose(0, 0)
+	if openMin >= 0 || wantClose {
+		return nil, errAt(len(s), "dangling open time at end of layout")
+	}
+
+	if dayRange {
+		return nil, errAt(len(s), "unfinished day range at end of layout")
+	}
+
+	// Trailing day group without times: open the whole day (OSM semantics;
+	// this is also what the "24/7" → "Mo-Su" alias expands to).
+	if len(days) > 0 && !haveTimes {
+		openMin = 0
+		emit(0, 0)
+	}
+
+	if len(ivs) == 0 {
+		return nil, fmt.Errorf("%w: no schedule entries", ErrInvalidLayout)
 	}
 
 	slices.SortFunc(ivs, func(a, b weekInterval) int {
@@ -429,17 +500,108 @@ func parse(layout string) []weekInterval { //nolint:gocognit,gocyclo,cyclop
 		return a.close - b.close
 	})
 
-	return ivs
+	return ivs, nil
 }
 
-func rtoi(r []rune) int {
-	num := 0
+const (
+	maxHour = 24
+	maxMin  = 59
+)
 
-	for _, v := range r {
-		num = num*10 + int(v-'0')
+// readTime reads a strict time token at s[i:]: one or two hour digits, ':',
+// exactly two minute digits, all contiguous. Validates hour <= 24 (24 only as
+// 24:00) and minute <= 59. Returns the position just past the token.
+func readTime(s string, i int) (h, m, next int, err error) {
+	j := i
+	for j < len(s) && j-i < 2 && '0' <= s[j] && s[j] <= '9' {
+		h = h*10 + int(s[j]-'0')
+		j++
 	}
 
-	return num
+	if j < len(s) && '0' <= s[j] && s[j] <= '9' {
+		return 0, 0, 0, errAt(i, "hour has more than two digits")
+	}
+
+	if j >= len(s) || s[j] != ':' {
+		return 0, 0, 0, errAt(i, "time %q: expected ':' after hour", s[i:j])
+	}
+
+	j++
+
+	k := j
+	for k < len(s) && k-j < 2 && '0' <= s[k] && s[k] <= '9' {
+		m = m*10 + int(s[k]-'0')
+		k++
+	}
+
+	if k-j != 2 { //nolint:mnd
+		return 0, 0, 0, errAt(i, "minutes must be exactly two digits")
+	}
+
+	if h > maxHour || m > maxMin || (h == maxHour && m != 0) {
+		return 0, 0, 0, errAt(i, "clock value %02d:%02d out of range", h, m)
+	}
+
+	return h, m, k, nil
+}
+
+// expandRange appends the days between the current last day and wd inclusive,
+// wrapping across the week end: "Fr-Mo" expands to Fr, Sa, Su, Mo.
+func expandRange(days []int, wd int) []int {
+	prev := days[len(days)-1]
+
+	switch {
+	case wd > prev:
+		for d := prev + 1; d <= wd; d++ {
+			days = append(days, d)
+		}
+	case wd < prev:
+		for d := prev + 1; d <= daysPerWeek; d++ {
+			days = append(days, d)
+		}
+
+		for d := 1; d <= wd; d++ {
+			days = append(days, d)
+		}
+	default: // "Mo-Mo": the single day is already in the set
+	}
+
+	return days
+}
+
+// errAt builds an ErrInvalidLayout-wrapped error carrying the byte offset of
+// the offending token, so ingest pipelines can report exactly what is wrong.
+func errAt(off int, format string, args ...any) error {
+	return fmt.Errorf("%w: %s (offset %d)", ErrInvalidLayout, fmt.Sprintf(format, args...), off)
+}
+
+// dayOf maps a two-letter day abbreviation (case-insensitive) to 1=Mo … 7=Su,
+// or 0 when word is not a day token.
+func dayOf(word string) int {
+	if len(word) != 2 { //nolint:mnd
+		return 0
+	}
+
+	b0, b1 := word[0]|0x20, word[1]|0x20
+
+	switch {
+	case b0 == 'm' && b1 == 'o':
+		return 1
+	case b0 == 't' && b1 == 'u':
+		return 2
+	case b0 == 'w' && b1 == 'e':
+		return 3
+	case b0 == 't' && b1 == 'h':
+		return 4
+	case b0 == 'f' && b1 == 'r':
+		return 5
+	case b0 == 's' && b1 == 'a':
+		return 6
+	case b0 == 's' && b1 == 'u':
+		return 7
+	default:
+		return 0
+	}
 }
 
 func matchWeek(ivs []weekInterval, tm int) bool {

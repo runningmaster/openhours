@@ -3,6 +3,7 @@ package openhours_test
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -79,9 +80,41 @@ func TestSplitMatch(t *testing.T) {
 			lstr: "Mo-Su 11:00-17:00",
 			want: false,
 		},
+		// Strict times: junk inside a time token is a parse error now, not a
+		// best-effort guess (this string used to lenient-parse as Mo-Su 11:00-20:00).
 		{
 			lstr: "Mo  -   foo    Su 11  :  bar    00  -    20:        00",
+			want: false,
+		},
+		// Single-digit hour is valid strict syntax (H:MM).
+		{
+			lstr: "Mo-Fr 9:00-18:00",
+			want: true, // Wednesday 17:30
+		},
+		// Out-of-range clock values are rejected (used to lenient-parse into garbage).
+		{
+			lstr: "Mo-Fr 08:00-25:70",
+			want: false,
+		},
+		// Wrapping day range: We-Mo covers We,Th,Fr,Sa,Su,Mo.
+		{
+			lstr: "We-Mo 08:00-20:00",
+			want: true, // Wednesday 17:30
+		},
+		// "24/7" with a rule tail; the tail words are transparent noise.
+		{
+			lstr: "24/7; PH off",
 			want: true,
+		},
+		// Unknown words are noise even between day groups and times.
+		{
+			lstr: "Mo-Fr 08:00-20:00 PH off",
+			want: true, // Wednesday 17:30
+		},
+		// Trailing day group without times = open the whole day.
+		{
+			lstr: "Mo-Tu 08:00-12:00 We",
+			want: true, // Wednesday 17:30
 		},
 		{
 			lstr: "Mo-Th 08:00-17:00; Fr 08:00-18:00; Sa 08:00-13:00",
@@ -184,6 +217,53 @@ func TestSplitMatch(t *testing.T) {
 				t.Errorf("match eod: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
 		})
+	}
+}
+
+// TestParseStrict pins the strictness contract: malformed time syntax and
+// structure fail with ErrInvalidLayout instead of silently producing a
+// plausible-but-wrong schedule, while noise words and separators stay legal.
+func TestParseStrict(t *testing.T) {
+	invalid := []string{
+		"Mo-Fr 08:00-25:70",  // hour and minutes out of range
+		"Mo-Fr 08:00-08:60",  // minutes out of range
+		"Mo-Fr 24:30-08:00",  // 24:xx only as 24:00
+		"Mo 24:00-06:00",     // 24:00 only as a close time
+		"Mo-Fr 08:00",        // dangling open time
+		"Mo-Fr 08:00-",       // dangling open time (dash, no close)
+		"Mo 09:00 14:00",     // two times without '-'
+		"Mo 09:00*14:00",     // unknown punctuation
+		"Mo 8:0-20:00",       // minutes must be two digits
+		"Mo 0800-2000",       // colon is required
+		"Mo 123:00-20:00",    // hour has more than two digits
+		"09:00-18:00",        // time without a preceding day group
+		"Mo 08:00-12:00 Fr-", // unfinished day range at end
+		"foobar",             // no schedule entries
+		"",                   // no schedule entries
+	}
+
+	for _, lstr := range invalid {
+		if _, err := openhours.Parse(lstr); !errors.Is(err, openhours.ErrInvalidLayout) {
+			t.Errorf("Parse(%q): err = %v, want ErrInvalidLayout", lstr, err)
+		}
+	}
+
+	valid := []string{
+		"Mo-Fr 9:00-18:00",                  // single-digit hour
+		"24/7",                              // alias
+		"24/7; PH off",                      // alias with rule tail
+		"Mo-Fr 08:00-20:00; PH off",         // noise words
+		"We-Mo 08:00-20:00",                 // wrapping day range
+		"Mo-Sa 08:00-21:00 Su",              // trailing full-day group
+		"Mo-Fr08:00-13:00,14:00-18:00",      // no spaces, comma separator
+		"Mo-Su 08:00-02:00",                 // overnight
+		"Mo 09:00-14:00 Tu-Fr 00:00-00:00 ", // trailing space
+	}
+
+	for _, lstr := range valid {
+		if _, err := openhours.Parse(lstr); err != nil {
+			t.Errorf("Parse(%q): unexpected err = %v", lstr, err)
+		}
 	}
 }
 
@@ -306,6 +386,12 @@ func TestUntil(t *testing.T) {
 
 		// Overnight Sunday→Monday: closed after the interval, next is this Sunday.
 		{"Su 22:00-02:00", d(7, 3, 0), false, d(13, 22, 0)},
+
+		// Overlapping intervals: boundary is the union close, not the first seam.
+		{"Mo 08:00-12:00 10:00-20:00", d(7, 9, 0), true, d(7, 20, 0)},
+
+		// Adjacent intervals chain: reopening at the same minute is no seam.
+		{"Mo 08:00-12:00 12:00-20:00", d(7, 9, 0), true, d(7, 20, 0)},
 
 		// Empty layout: always closed, zero boundary.
 		{"", d(9, 17, 30), false, time.Time{}},
