@@ -47,6 +47,21 @@ for _, p := range pharmacies {
 }
 ```
 
+For the fastest path, pre-parse schedules at ingest (see below) and decompose
+the instant once per request with `TimeOf`: `MatchAt` then costs only the
+interval scan — about an order of magnitude cheaper per point than `Match`,
+with no shared state between goroutines.
+
+```go
+wt := openhours.TimeOf(time.Now()) // once per request
+
+for _, p := range pharmacies {
+    if p.Schedule.MatchAt(wt) { // p.Schedule is a pre-parsed openhours.Schedule
+        results = append(results, p)
+    }
+}
+```
+
 ### Pre-parsed schedule
 
 `Parse` compiles a spec string once. Use it when the set of schedules is fixed (loaded from config or DB at startup) or when you need more than just a boolean.

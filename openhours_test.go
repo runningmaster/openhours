@@ -235,6 +235,39 @@ func TestSplitMatch(t *testing.T) {
 	}
 }
 
+// TestMatchAt pins that MatchAt(TimeOf(t)) is exactly equivalent to Match(t)
+// across schedules and moments, including overnight and week-wrap intervals.
+func TestMatchAt(t *testing.T) {
+	specs := []string{
+		"24/7",
+		"Mo-Fr 09:00-20:00",
+		"Su 22:00-02:00",    // overnight Su→Mo
+		"Mo-Su 08:00-02:00", // overnight every day
+		"We 08:00-08:00",    // 24h wrap
+		"Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30",
+		"Mo-Tu 08:00-12:00 We", // trailing full day
+	}
+
+	// Every 17 minutes across a full week (Mon 7 Nov 2022 …).
+	start := time.Date(2022, time.November, 7, 0, 0, 0, 0, time.Local)
+
+	for _, spec := range specs {
+		l, err := openhours.Parse(spec)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", spec, err)
+		}
+
+		for m := 0; m < 7*24*60; m += 17 {
+			at := start.Add(time.Duration(m) * time.Minute)
+
+			if got, want := l.MatchAt(openhours.TimeOf(at)), l.Match(at); got != want {
+				t.Errorf("%q at %s: MatchAt = %v, Match = %v",
+					spec, at.Format("Mon 15:04"), got, want)
+			}
+		}
+	}
+}
+
 // TestSplitSorted pins the doc contract: Split returns boundaries in time
 // order even when intervals overlap or nest.
 func TestSplitSorted(t *testing.T) {
@@ -551,6 +584,20 @@ func BenchmarkMatch(b *testing.B) {
 
 	for range b.N {
 		ok = openhours.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30", now)
+		blackhole = ok
+	}
+}
+
+// BenchmarkMatchAt is the batch hot path: the instant is decomposed once per
+// request with TimeOf, each point costs only the interval scan.
+func BenchmarkMatchAt(b *testing.B) {
+	l, _ := openhours.Parse("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30")
+	wt := openhours.TimeOf(time.Now())
+
+	var ok bool
+
+	for range b.N {
+		ok = l.MatchAt(wt)
 		blackhole = ok
 	}
 }

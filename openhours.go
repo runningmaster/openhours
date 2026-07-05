@@ -49,6 +49,32 @@ func (l Schedule) Match(t time.Time) bool {
 	return matchWeek(l.ivs, weekMinutes(t))
 }
 
+// WeekTime is a moment within the week at minute precision: the position of a
+// time.Time relative to Monday 00:00 of its week, in its location. The zero
+// value is Monday 00:00.
+//
+// Decomposing a time.Time dominates the cost of Match, so when filtering many
+// schedules against one instant, convert it once with TimeOf and reuse the
+// WeekTime with MatchAt.
+type WeekTime struct{ tm int }
+
+// TimeOf converts t to a WeekTime for use with Schedule.MatchAt.
+func TimeOf(t time.Time) WeekTime {
+	return WeekTime{tm: weekMinutes(t)}
+}
+
+// MatchAt reports whether wt falls within the open hours described by l.
+// It is equivalent to Match at the time wt was computed from, minus the
+// per-call cost of decomposing a time.Time:
+//
+//	wt := openhours.TimeOf(time.Now()) // once per request
+//	for _, p := range points {
+//		if p.Schedule.MatchAt(wt) { ... }
+//	}
+func (l Schedule) MatchAt(wt WeekTime) bool {
+	return matchWeek(l.ivs, wt.tm)
+}
+
 // Split returns a sorted slice of open/close time boundaries anchored to the
 // week containing t, together with a flag reporting whether t itself is open.
 // Boundaries of overlapping intervals are interleaved in time order.
