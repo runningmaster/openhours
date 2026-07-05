@@ -293,6 +293,32 @@ func TestErrOffset(t *testing.T) {
 	}
 }
 
+// TestDuplicateDays pins that duplicate day tokens and repeated groups do not
+// emit duplicate intervals: "Mo,Mo-Tu ...; Mo ..." is the same schedule as
+// "Mo-Tu ..." for Format, Split and Match alike.
+func TestDuplicateDays(t *testing.T) {
+	now := time.Date(2022, time.November, 9, 17, 30, 0, 0, time.Local)
+
+	dup, err := openhours.Parse("Mo,Mo-Tu 08:00-12:00; Mo 08:00-12:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain, err := openhours.Parse("Mo-Tu 08:00-12:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := dup.Format(now), plain.Format(now); got != want {
+		t.Errorf("Format:\ngot  %q\nwant %q", got, want)
+	}
+
+	ts, _ := dup.Split(now)
+	if len(ts) != 4 {
+		t.Errorf("Split: got %d boundaries, want 4: %v", len(ts), ts)
+	}
+}
+
 // TestParseStrict pins the strictness contract: malformed time syntax and
 // structure fail with ErrInvalidSchedule instead of silently producing a
 // plausible-but-wrong schedule, while noise words and separators stay legal.

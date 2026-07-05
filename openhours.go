@@ -523,7 +523,9 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 		return a.close - b.close
 	})
 
-	return ivs, nil
+	// Duplicate day tokens ("Mo,Mo-Tu") or repeated groups emit identical
+	// intervals; the sort makes them adjacent, so compact them away.
+	return slices.Compact(ivs), nil
 }
 
 const (
