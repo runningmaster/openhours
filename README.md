@@ -19,7 +19,7 @@ A deliberately small, strictly validated subset of the OSM syntax:
   for `Mo-Su`.
 
 **Strict where it matters, lenient where it doesn't.** Malformed *time syntax
-and structure* fail `Parse` with `ErrInvalidLayout` (wrapped with the reason
+and structure* fail `Parse` with `ErrInvalidSchedule` (wrapped with the reason
 and byte offset) instead of silently producing a plausible-but-wrong schedule —
 the worst failure mode for an "open now" filter: out-of-range clock values,
 missing `:`, an open time without its close, two times without `-`. Unknown
@@ -28,13 +28,13 @@ feeds still parse. Not supported: month/date ranges, week numbers, public
 holidays, sunrise/sunset.
 
 Validate at ingest with `Parse`; the package-level `Match` never returns an
-error — an unparsable layout simply never matches.
+error — an unparsable spec simply never matches.
 
 ## Usage
 
 ### Batch matching (hot path)
 
-Package-level `Match` uses a built-in LRU cache, so repeated calls with the same layout string do not re-parse it. Suitable for filtering large lists.
+Package-level `Match` uses a built-in LRU cache, so repeated calls with the same spec string do not re-parse it. Suitable for filtering large lists.
 
 ```go
 now := time.Now()
@@ -46,14 +46,14 @@ for _, p := range pharmacies {
 }
 ```
 
-### Pre-parsed layout
+### Pre-parsed schedule
 
-`Parse` compiles a layout string once. Use it when the set of schedules is fixed (loaded from config or DB at startup) or when you need more than just a boolean.
+`Parse` compiles a spec string once. Use it when the set of schedules is fixed (loaded from config or DB at startup) or when you need more than just a boolean.
 
 ```go
 l, err := openhours.Parse("Mo-Fr 09:00-20:00; Sa 10:00-18:00")
 if err != nil {
-    // layout string contains no recognisable schedule entries
+    // spec is malformed or contains no recognisable schedule entries
 }
 
 // Is it open right now?

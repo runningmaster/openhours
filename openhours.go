@@ -12,18 +12,18 @@ import (
 	"unicode/utf8"
 )
 
-// Layout holds a pre-parsed opening-hours schedule. The zero value is valid
-// but will never match. Use Parse to obtain a Layout from a string.
-type Layout struct{ ivs []weekInterval }
+// Schedule holds a pre-parsed opening-hours schedule. The zero value is valid
+// but will never match. Use Parse to obtain a Schedule from a string.
+type Schedule struct{ ivs []weekInterval }
 
-// ErrInvalidLayout is returned by Parse when the layout string is malformed or
+// ErrInvalidSchedule is returned by Parse when the spec is malformed or
 // contains no recognisable schedule entries. Errors returned by Parse wrap it,
 // adding the exact reason and byte offset; test with errors.Is.
-var ErrInvalidLayout = errors.New("openhours: invalid layout")
+var ErrInvalidSchedule = errors.New("openhours: invalid schedule")
 
-// Parse compiles a layout string into a Layout for repeated evaluation.
+// Parse compiles a spec into a Schedule for repeated evaluation.
 // Unlike the package-level Match, Parse does not use the global cache;
-// the caller owns the returned Layout value.
+// the caller owns the returned Schedule value.
 //
 // Parse is STRICT about time syntax and structure — a malformed schedule fails
 // loudly instead of silently producing a plausible-but-wrong schedule (the
@@ -35,23 +35,23 @@ var ErrInvalidLayout = errors.New("openhours: invalid layout")
 // OpenStreetMap-ish inputs still parse. A trailing day group without times
 // means "open the whole day" (OSM semantics), and "24/7" (alone or with a
 // trailing rule tail) is an alias for Mo-Su.
-func Parse(layout string) (Layout, error) {
-	ivs, err := parse(layout)
+func Parse(spec string) (Schedule, error) {
+	ivs, err := parse(spec)
 	if err != nil {
-		return Layout{}, err
+		return Schedule{}, err
 	}
 
-	return Layout{ivs: ivs}, nil
+	return Schedule{ivs: ivs}, nil
 }
 
 // Match reports whether t falls within the open hours described by l.
-func (l Layout) Match(t time.Time) bool {
+func (l Schedule) Match(t time.Time) bool {
 	return matchWeek(l.ivs, weekMinutes(t))
 }
 
 // Split returns a sorted slice of open/close time boundaries anchored to the
 // week containing t, together with a flag reporting whether t itself is open.
-func (l Layout) Split(t time.Time) ([]time.Time, bool) {
+func (l Schedule) Split(t time.Time) ([]time.Time, bool) {
 	monday := mondayOf(t)
 	out := make([]time.Time, 0, len(l.ivs)*2)
 
@@ -64,7 +64,7 @@ func (l Layout) Split(t time.Time) ([]time.Time, bool) {
 
 // Format returns a human-readable summary of the schedule for the week
 // containing t, marking the currently-open interval with '*'.
-func (l Layout) Format(t time.Time) string {
+func (l Schedule) Format(t time.Time) string {
 	if len(l.ivs) == 0 {
 		return ""
 	}
@@ -115,7 +115,7 @@ func (l Layout) Format(t time.Time) string {
 // If t falls in a gap, open is false and boundary is when it next opens.
 // boundary is the zero Time if the schedule has no intervals.
 // Note: boundary is the exact transition instant — a midnight close is 00:00, not 23:59.
-func (l Layout) Until(t time.Time) (open bool, boundary time.Time) {
+func (l Schedule) Until(t time.Time) (open bool, boundary time.Time) {
 	if len(l.ivs) == 0 {
 		return false, time.Time{}
 	}
@@ -173,13 +173,13 @@ func unionEnd(ivs []weekInterval, tm int) (int, bool) {
 	return end, true
 }
 
-// Match reports whether t falls within the open hours described by layout.
-// An unparsable layout yields false — no error is returned.
+// Match reports whether t falls within the open hours described by spec.
+// An unparsable spec yields false — no error is returned.
 // Results are cached in a package-level cache; see SetCacheSize.
-func Match(layout string, t time.Time) bool {
+func Match(spec string, t time.Time) bool {
 	initCache()
 
-	return getOrParse(layout).Match(t)
+	return getOrParse(spec).Match(t)
 }
 
 // --- implementation ---
@@ -203,7 +203,7 @@ type weekInterval struct {
 // clockEntry is a single slot in the second-chance ring buffer.
 type clockEntry struct {
 	key   string
-	value Layout
+	value Schedule
 	ref   atomic.Bool // referenced since last clock-hand pass
 }
 
@@ -212,7 +212,7 @@ var (
 	cacheSize atomic.Int32
 
 	cacheMu  sync.RWMutex
-	cache    map[string]int // layout → ring index
+	cache    map[string]int // spec → ring index
 	ring     []clockEntry
 	clockPos int
 
@@ -223,7 +223,7 @@ func init() { //nolint: gochecknoinits
 	cacheSize.Store(defaultCacheSize)
 }
 
-// SetCacheSize sets the maximum number of distinct layout strings held in the
+// SetCacheSize sets the maximum number of distinct spec strings held in the
 // package-level parse cache. It must be called before the first call to Match;
 // later calls have no effect once the cache is initialised.
 func SetCacheSize(n int) {
@@ -244,10 +244,10 @@ func initCache() {
 	})
 }
 
-func getOrParse(layout string) Layout {
+func getOrParse(spec string) Schedule {
 	cacheMu.RLock()
 
-	idx, ok := cache[layout]
+	idx, ok := cache[spec]
 	if ok {
 		ring[idx].ref.Store(true)
 		l := ring[idx].value
@@ -259,15 +259,15 @@ func getOrParse(layout string) Layout {
 
 	cacheMu.RUnlock()
 
-	// A malformed layout caches as the zero Layout, which never matches —
+	// A malformed spec caches as the zero Schedule, which never matches —
 	// the package-level Match stays error-free by contract.
-	ivs, _ := parse(layout)
-	parsed := Layout{ivs: ivs}
+	ivs, _ := parse(spec)
+	parsed := Schedule{ivs: ivs}
 
 	cacheMu.Lock()
 
 	// Double-check: another goroutine may have raced us.
-	idx, ok = cache[layout]
+	idx, ok = cache[spec]
 	if ok {
 		ring[idx].ref.Store(true)
 		l := ring[idx].value
@@ -289,10 +289,10 @@ func getOrParse(layout string) Layout {
 		delete(cache, old)
 	}
 
-	ring[clockPos].key = layout
+	ring[clockPos].key = spec
 	ring[clockPos].value = parsed
 	ring[clockPos].ref.Store(true)
-	cache[layout] = clockPos
+	cache[spec] = clockPos
 
 	clockPos = (clockPos + 1) % len(ring)
 
@@ -304,31 +304,31 @@ func getOrParse(layout string) Layout {
 // alias247 rewrites a leading "24/7" token (alone, or followed by a rule tail
 // like "; PH off") to its "Mo-Su" full-week equivalent. Any other placement is
 // left to the parser, which rejects it as a malformed time.
-func alias247(layout string) string {
-	s := strings.TrimSpace(layout)
+func alias247(spec string) string {
+	s := strings.TrimSpace(spec)
 
 	rest, ok := strings.CutPrefix(s, "24/7")
 	if !ok {
-		return layout
+		return spec
 	}
 
 	if rest != "" {
 		r, _ := utf8.DecodeRuneInString(rest)
 		if r != ' ' && r != '\t' && r != ';' && r != ',' {
-			return layout
+			return spec
 		}
 	}
 
 	return "Mo-Su" + rest
 }
 
-// parse compiles a layout string into sorted week intervals. Strictness
+// parse compiles a spec into sorted week intervals. Strictness
 // contract: time syntax and open-close structure are validated (see Parse);
 // unknown words and the ',' ';' separators are transparent noise. A group is a
 // day set plus the intervals that follow it; a day token after intervals starts
 // the next group; a trailing group without intervals emits full days.
-func parse(layout string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cyclop,funlen
-	s := alias247(layout)
+func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cyclop,funlen
+	s := alias247(spec)
 
 	var (
 		days      []int // current group's day set (1=Mo … 7=Su)
@@ -473,11 +473,11 @@ func parse(layout string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cy
 	}
 
 	if openMin >= 0 || wantClose {
-		return nil, errAt(len(s), "dangling open time at end of layout")
+		return nil, errAt(len(s), "dangling open time at end of spec")
 	}
 
 	if dayRange {
-		return nil, errAt(len(s), "unfinished day range at end of layout")
+		return nil, errAt(len(s), "unfinished day range at end of spec")
 	}
 
 	// Trailing day group without times: open the whole day (OSM semantics;
@@ -488,7 +488,7 @@ func parse(layout string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cy
 	}
 
 	if len(ivs) == 0 {
-		return nil, fmt.Errorf("%w: no schedule entries", ErrInvalidLayout)
+		return nil, fmt.Errorf("%w: no schedule entries", ErrInvalidSchedule)
 	}
 
 	slices.SortFunc(ivs, func(a, b weekInterval) int {
@@ -569,10 +569,10 @@ func expandRange(days []int, wd int) []int {
 	return days
 }
 
-// errAt builds an ErrInvalidLayout-wrapped error carrying the byte offset of
+// errAt builds an ErrInvalidSchedule-wrapped error carrying the byte offset of
 // the offending token, so ingest pipelines can report exactly what is wrong.
 func errAt(off int, format string, args ...any) error {
-	return fmt.Errorf("%w: %s (offset %d)", ErrInvalidLayout, fmt.Sprintf(format, args...), off)
+	return fmt.Errorf("%w: %s (offset %d)", ErrInvalidSchedule, fmt.Sprintf(format, args...), off)
 }
 
 // dayOf maps a two-letter day abbreviation (case-insensitive) to 1=Mo … 7=Su,

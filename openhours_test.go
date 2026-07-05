@@ -221,7 +221,7 @@ func TestSplitMatch(t *testing.T) {
 }
 
 // TestParseStrict pins the strictness contract: malformed time syntax and
-// structure fail with ErrInvalidLayout instead of silently producing a
+// structure fail with ErrInvalidSchedule instead of silently producing a
 // plausible-but-wrong schedule, while noise words and separators stay legal.
 func TestParseStrict(t *testing.T) {
 	invalid := []string{
@@ -243,8 +243,8 @@ func TestParseStrict(t *testing.T) {
 	}
 
 	for _, lstr := range invalid {
-		if _, err := openhours.Parse(lstr); !errors.Is(err, openhours.ErrInvalidLayout) {
-			t.Errorf("Parse(%q): err = %v, want ErrInvalidLayout", lstr, err)
+		if _, err := openhours.Parse(lstr); !errors.Is(err, openhours.ErrInvalidSchedule) {
+			t.Errorf("Parse(%q): err = %v, want ErrInvalidSchedule", lstr, err)
 		}
 	}
 
@@ -393,7 +393,7 @@ func TestUntil(t *testing.T) {
 		// Adjacent intervals chain: reopening at the same minute is no seam.
 		{"Mo 08:00-12:00 12:00-20:00", d(7, 9, 0), true, d(7, 20, 0)},
 
-		// Empty layout: always closed, zero boundary.
+		// Empty spec: always closed, zero boundary.
 		{"", d(9, 17, 30), false, time.Time{}},
 	}
 
@@ -441,9 +441,9 @@ func BenchmarkMatch(b *testing.B) {
 }
 
 // BenchmarkMatchMemo simulates filtering a large pharmacy list where many
-// entries share the same layout string (realistic for chain pharmacies).
+// entries share the same spec string (realistic for chain pharmacies).
 func BenchmarkMatchMemo(b *testing.B) {
-	layouts := [...]string{
+	specs := [...]string{
 		"Mo-Fr 08:00-20:00; Sa-Su 09:00-18:00",
 		"Mo-Su 08:00-22:00",
 		"Mo-Fr 09:00-17:00",
@@ -456,7 +456,7 @@ func BenchmarkMatchMemo(b *testing.B) {
 	var ok bool
 
 	for i := range b.N {
-		ok = openhours.Match(layouts[i%len(layouts)], now)
+		ok = openhours.Match(specs[i%len(specs)], now)
 		blackhole = ok
 	}
 }
