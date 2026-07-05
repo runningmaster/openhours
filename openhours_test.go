@@ -149,6 +149,19 @@ func TestSplitMatch(t *testing.T) {
 			lstr: "Mo-Su 08:00-02:00",
 			want: true, // every day open until 02:00 next day
 		},
+		// close == open spans a full 24 hours (OSM semantics)
+		{
+			lstr: "We 08:00-08:00",
+			want: true, // Wed 08:00 through Thu 08:00 includes Wed 17:30
+		},
+		{
+			lstr: "Tu 18:00-18:00",
+			want: true, // Tue 18:00 through Wed 18:00 includes Wed 17:30
+		},
+		{
+			lstr: "Th 08:00-08:00",
+			want: false, // opens Thu 08:00, after Wed 17:30
+		},
 	}
 
 	// Separate fixed-time tests: Wednesday 23:59 — last minute of day must be "open".
@@ -402,6 +415,9 @@ func TestUntil(t *testing.T) {
 
 		// Overnight interval chains into the next Monday interval.
 		{"Su 22:00-02:00 Mo 02:00-04:00", d(7, 1, 0), true, d(7, 4, 0)},
+
+		// close == open is a full 24 hours: closes same time next day.
+		{"Mo 08:00-08:00", d(7, 9, 0), true, d(8, 8, 0)},
 
 		// Always open: never closes, zero boundary.
 		{"24/7", d(13, 23, 0), true, time.Time{}},

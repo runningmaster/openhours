@@ -10,8 +10,9 @@ A deliberately small, strictly validated subset of the OSM syntax:
   lists (`Mo, We, Fr`) and ranges (`Mo-Fr`); ranges may wrap the week end
   (`Fr-Mo` = Fr, Sa, Su, Mo).
 - **Times**: `H:MM` or `HH:MM`, hour ≤ 24, minutes ≤ 59; `24:00` (and `00:00`)
-  as a close time mean end of day; a close earlier than its open spans
-  midnight (`Su 22:00-02:00`).
+  as a close time mean end of day; a close equal to or earlier than its open
+  spans midnight (`Su 22:00-02:00`; `We 08:00-08:00` is a full 24 hours, per
+  OSM semantics).
 - **Rules**: a day group followed by one or more `open-close` intervals
   (`Mo-Fr 08:00-13:00 14:00-18:00`); several groups follow each other,
   separated by whitespace, `,` or `;`. A trailing day group without times

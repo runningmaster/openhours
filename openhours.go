@@ -353,7 +353,10 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 	)
 
 	// emit appends one interval per day of the current group, handling the
-	// 00:00/24:00 end-of-day sentinels and overnight (close < open) wraps.
+	// 00:00/24:00 end-of-day sentinels and overnight (close <= open) wraps.
+	// Equal open and close span a full 24 hours (OSM semantics: "08:00-08:00"
+	// closes at 08:00 the next day); the sentinels never collide with this,
+	// since an open time of 24:00 is rejected earlier.
 	emit := func(closeH, closeM int) {
 		const h24 = 24
 
@@ -365,7 +368,7 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 			closeMinOfDay = closeH*minsPerHour + closeM
 		}
 
-		isOvernight := closeMinOfDay < openMin
+		isOvernight := closeMinOfDay <= openMin
 
 		for _, day := range days {
 			base := (day - 1) * minsPerDay
