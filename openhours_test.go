@@ -393,6 +393,19 @@ func TestUntil(t *testing.T) {
 		// Adjacent intervals chain: reopening at the same minute is no seam.
 		{"Mo 08:00-12:00 12:00-20:00", d(7, 9, 0), true, d(7, 20, 0)},
 
+		// Union chains across the Su→Mo week boundary: separately-encoded
+		// Sunday close and Monday open are no seam.
+		{"Su 22:00-24:00 Mo 00:00-02:00", d(13, 23, 0), true, d(14, 2, 0)},
+
+		// Full-day wrap: Fr-Mo at Sunday evening stays open through Monday.
+		{"Fr-Mo", d(13, 23, 0), true, d(15, 0, 0)},
+
+		// Overnight interval chains into the next Monday interval.
+		{"Su 22:00-02:00 Mo 02:00-04:00", d(7, 1, 0), true, d(7, 4, 0)},
+
+		// Always open: never closes, zero boundary.
+		{"24/7", d(13, 23, 0), true, time.Time{}},
+
 		// Empty spec: always closed, zero boundary.
 		{"", d(9, 17, 30), false, time.Time{}},
 	}

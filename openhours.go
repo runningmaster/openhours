@@ -111,9 +111,12 @@ func (l Schedule) Format(t time.Time) string {
 // Until returns the nearest open/close boundary after t.
 // If t falls within an open interval, open is true and boundary is when the
 // UNION of overlapping/adjacent intervals containing t closes — a schedule like
-// "Mo 08:00-12:00 12:00-20:00" reports 20:00 at 09:00, not the 12:00 seam.
+// "Mo 08:00-12:00 12:00-20:00" reports 20:00 at 09:00, not the 12:00 seam. The
+// union also chains across the Su→Mo week boundary, so "Fr-Mo" at Sunday
+// evening reports Tuesday 00:00 rather than the Monday-midnight seam.
 // If t falls in a gap, open is false and boundary is when it next opens.
-// boundary is the zero Time if the schedule has no intervals.
+// boundary is the zero Time if the schedule has no intervals, or if the union
+// covers the whole week (a 24/7 schedule): the schedule never closes.
 // Note: boundary is the exact transition instant — a midnight close is 00:00, not 23:59.
 func (l Schedule) Until(t time.Time) (open bool, boundary time.Time) {
 	if len(l.ivs) == 0 {
@@ -124,6 +127,10 @@ func (l Schedule) Until(t time.Time) (open bool, boundary time.Time) {
 	monday := mondayOf(t)
 
 	if end, ok := unionEnd(l.ivs, tm); ok {
+		if end-tm >= minsPerWeek { // union wrapped a full week: always open
+			return true, time.Time{}
+		}
+
 		return true, minsToTime(monday, end)
 	}
 
@@ -145,7 +152,10 @@ func (l Schedule) Until(t time.Time) (open bool, boundary time.Time) {
 
 // unionEnd returns the close of the union of intervals covering tm: starting
 // from the widest interval containing tm, it keeps extending the boundary while
-// another interval overlaps or touches it. Reports false when tm is not open.
+// another interval overlaps or touches it. Each interval is also considered
+// shifted one week forward, so the union chains across the Su→Mo week boundary.
+// Reports false when tm is not open. A result with end-tm >= minsPerWeek means
+// the union wrapped a full week — the schedule is open at every minute.
 func unionEnd(ivs []weekInterval, tm int) (int, bool) {
 	end := -1
 
@@ -159,13 +169,15 @@ func unionEnd(ivs []weekInterval, tm int) (int, bool) {
 		return 0, false
 	}
 
-	for extended := true; extended; {
+	for extended := true; extended && end-tm < minsPerWeek; {
 		extended = false
 
 		for _, iv := range ivs {
-			if iv.open <= end && iv.close > end {
-				end = iv.close
-				extended = true
+			for _, shift := range [...]int{0, minsPerWeek} {
+				if o, c := iv.open+shift, iv.close+shift; o <= end && c > end {
+					end = c
+					extended = true
+				}
 			}
 		}
 	}
