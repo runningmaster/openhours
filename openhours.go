@@ -226,7 +226,7 @@ type clockEntry struct {
 
 //nolint:gochecknoglobals
 var (
-	cacheSize atomic.Int32
+	cacheSize atomic.Int64
 
 	cacheMu  sync.RWMutex
 	cache    map[string]int // spec → ring index
@@ -248,7 +248,9 @@ func SetCacheSize(n int) {
 		n = defaultCacheSize
 	}
 
-	cacheSize.Store(int32(n))
+	// int64 holds any int losslessly; an int32 cast would overflow for
+	// n > MaxInt32 on 64-bit platforms and panic in initCache's make.
+	cacheSize.Store(int64(n))
 }
 
 // initCache pre-allocates the ring buffer on first use. It reads cacheSize
