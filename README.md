@@ -35,7 +35,7 @@ error — an unparsable spec simply never matches.
 
 ### Batch matching (hot path)
 
-Package-level `Match` uses a built-in LRU cache, so repeated calls with the same spec string do not re-parse it. Suitable for filtering large lists.
+Package-level `Match` uses a built-in LRU cache, so repeated calls with the same spec string do not re-parse it. Cache hits are lock-free and scale linearly across goroutines; a miss pays a one-time snapshot rebuild (O(cache size)) per new spec. Suitable for filtering large lists.
 
 ```go
 now := time.Now()

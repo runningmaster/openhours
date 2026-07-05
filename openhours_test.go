@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -266,6 +268,49 @@ func TestMatchAt(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestMatchConcurrent hammers the package-level cache from many goroutines
+// with more unique specs than the default cache size, forcing constant clock
+// eviction, and checks every answer against an uncached Parse+Match. Run with
+// -race this also proves the lock-free hit path publishes entries safely.
+func TestMatchConcurrent(t *testing.T) {
+	now := time.Now()
+	days := [...]string{"Mo", "Tu", "We", "Th", "Fr"}
+
+	// ~7200 unique valid specs (> default cache size 4096) plus some garbage.
+	specs := make([]string, 0, 7500)
+	for i := range 7200 {
+		specs = append(specs, fmt.Sprintf("%s %d:%02d-23:00", days[i/1440], i%1440/60, i%60))
+	}
+
+	for i := range 300 {
+		specs = append(specs, fmt.Sprintf("bogus%d", i))
+	}
+
+	var wg sync.WaitGroup
+	for w := range 8 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for i := range 2000 {
+				spec := specs[(i*13+w*991)%len(specs)]
+
+				want := false
+				if l, err := openhours.Parse(spec); err == nil {
+					want = l.Match(now)
+				}
+
+				if got := openhours.Match(spec, now); got != want {
+					t.Errorf("Match(%q) = %v, want %v", spec, got, want)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 // TestSplitSorted pins the doc contract: Split returns boundaries in time
@@ -600,6 +645,23 @@ func BenchmarkMatchAt(b *testing.B) {
 		ok = l.MatchAt(wt)
 		blackhole = ok
 	}
+}
+
+// BenchmarkMatchParallel pins the scaling of the cache hit path: hits are
+// lock-free, so throughput must grow with cores, not collapse on a mutex.
+func BenchmarkMatchParallel(b *testing.B) {
+	now := time.Now()
+
+	var sink atomic.Bool
+
+	b.RunParallel(func(pb *testing.PB) {
+		var ok bool
+		for pb.Next() {
+			ok = openhours.Match("Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00; Fr 09:00-17:30", now)
+		}
+
+		sink.Store(ok)
+	})
 }
 
 // BenchmarkMatchMemo simulates filtering a large pharmacy list where many

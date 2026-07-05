@@ -243,20 +243,26 @@ type weekInterval struct {
 	close int
 }
 
-// clockEntry is a single slot in the second-chance ring buffer.
+// clockEntry is a single slot in the second-chance ring buffer. Entries are
+// immutable after publication except for the atomic ref bit.
 type clockEntry struct {
 	key   string
 	value Schedule
 	ref   atomic.Bool // referenced since last clock-hand pass
 }
 
+// The cache is read-mostly: hits load an immutable spec→entry map through an
+// atomic pointer and touch no locks, so they scale linearly across goroutines.
+// Misses are serialised by writeMu; each miss evicts via the clock ring and
+// publishes a rebuilt snapshot (O(cache size), paid only once per new spec).
+//
 //nolint:gochecknoglobals
 var (
 	cacheSize atomic.Int64
 
-	cacheMu  sync.RWMutex
-	cache    map[string]int // spec → ring index
-	ring     []clockEntry
+	snapshot atomic.Pointer[map[string]*clockEntry]
+	writeMu  sync.Mutex
+	ring     []*clockEntry
 	clockPos int
 
 	initOnce sync.Once
@@ -283,65 +289,68 @@ func SetCacheSize(n int) {
 // at init time; later calls to SetCacheSize have no effect.
 func initCache() {
 	initOnce.Do(func() {
-		n := int(cacheSize.Load())
-		cache = make(map[string]int, n)
-		ring = make([]clockEntry, n)
+		ring = make([]*clockEntry, cacheSize.Load())
+		m := make(map[string]*clockEntry)
+		snapshot.Store(&m)
 	})
 }
 
 func getOrParse(spec string) Schedule {
-	cacheMu.RLock()
+	// Lock-free hit path: the snapshot map is immutable once published.
+	// The ref bit is written only on a false→true transition, so steady-state
+	// hits are pure reads and the entry's cache line stays shared across cores.
+	if e, ok := (*snapshot.Load())[spec]; ok {
+		if !e.ref.Load() {
+			e.ref.Store(true)
+		}
 
-	idx, ok := cache[spec]
-	if ok {
-		ring[idx].ref.Store(true)
-		l := ring[idx].value
-
-		cacheMu.RUnlock()
-
-		return l
+		return e.value
 	}
-
-	cacheMu.RUnlock()
 
 	// A malformed spec caches as the zero Schedule, which never matches —
 	// the package-level Match stays error-free by contract.
 	ivs, _ := parse(spec)
 	parsed := Schedule{ivs: ivs}
 
-	cacheMu.Lock()
+	writeMu.Lock()
+	defer writeMu.Unlock()
 
 	// Double-check: another goroutine may have raced us.
-	idx, ok = cache[spec]
-	if ok {
-		ring[idx].ref.Store(true)
-		l := ring[idx].value
+	cur := *snapshot.Load()
+	if e, ok := cur[spec]; ok {
+		e.ref.Store(true)
 
-		cacheMu.Unlock()
-
-		return l
+		return e.value
 	}
 
-	// Clock eviction: advance hand past recently-referenced entries.
-	for ring[clockPos].ref.Load() {
+	// Clock eviction: advance hand past recently-referenced entries. A nil
+	// slot is still unused and stops the hand immediately; a full circle of
+	// referenced entries clears their bits and terminates back at the start.
+	for ring[clockPos] != nil && ring[clockPos].ref.Load() {
 		ring[clockPos].ref.Store(false)
 		clockPos = (clockPos + 1) % len(ring)
 	}
 
-	// Evict stale entry and insert the new one.
-	old := ring[clockPos].key
-	if old != "" {
-		delete(cache, old)
-	}
+	entry := &clockEntry{key: spec, value: parsed}
+	entry.ref.Store(true)
 
-	ring[clockPos].key = spec
-	ring[clockPos].value = parsed
-	ring[clockPos].ref.Store(true)
-	cache[spec] = clockPos
-
+	victim := ring[clockPos]
+	ring[clockPos] = entry
 	clockPos = (clockPos + 1) % len(ring)
 
-	cacheMu.Unlock()
+	// Publish a rebuilt snapshot with the victim dropped and the new entry
+	// added. Readers keep using the old map until the pointer swap.
+	next := make(map[string]*clockEntry, len(cur)+1)
+	for k, v := range cur {
+		next[k] = v
+	}
+
+	if victim != nil {
+		delete(next, victim.key)
+	}
+
+	next[spec] = entry
+	snapshot.Store(&next)
 
 	return parsed
 }
