@@ -51,6 +51,7 @@ func (l Schedule) Match(t time.Time) bool {
 
 // Split returns a sorted slice of open/close time boundaries anchored to the
 // week containing t, together with a flag reporting whether t itself is open.
+// Boundaries of overlapping intervals are interleaved in time order.
 func (l Schedule) Split(t time.Time) ([]time.Time, bool) {
 	monday := mondayOf(t)
 	out := make([]time.Time, 0, len(l.ivs)*2)
@@ -58,6 +59,10 @@ func (l Schedule) Split(t time.Time) ([]time.Time, bool) {
 	for _, iv := range l.ivs {
 		out = append(out, minsToTime(monday, iv.open), closeToTime(monday, iv.close))
 	}
+
+	// Intervals are sorted by open, but a close may outlast the next open
+	// ("Mo 08:00-20:00 10:00-12:00"), so the interleaved slice needs a sort.
+	slices.SortFunc(out, time.Time.Compare)
 
 	return out, matchWeek(l.ivs, weekMinutes(t))
 }

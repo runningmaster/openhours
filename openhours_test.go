@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -230,6 +231,32 @@ func TestSplitMatch(t *testing.T) {
 				t.Errorf("match eod: case %q: got %v, want %v", test.lstr, ok, test.want)
 			}
 		})
+	}
+}
+
+// TestSplitSorted pins the doc contract: Split returns boundaries in time
+// order even when intervals overlap or nest.
+func TestSplitSorted(t *testing.T) {
+	specs := []string{
+		"Mo 08:00-20:00 10:00-12:00",               // nested
+		"Mo 08:00-12:00 10:00-20:00",               // overlapping
+		"Su 22:00-02:00 Mo 01:00-03:00",            // overnight wrap overlap
+		"Mo 09:00-19:00; Tu-Th, Sa-Su 10:00-19:00", // disjoint
+		"Mo-Tu 08:00-12:00 We",                     // full-day close (23:59)
+	}
+
+	now := time.Date(2022, time.November, 9, 17, 30, 0, 0, time.Local)
+
+	for _, spec := range specs {
+		l, err := openhours.Parse(spec)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", spec, err)
+		}
+
+		ts, _ := l.Split(now)
+		if !slices.IsSortedFunc(ts, time.Time.Compare) {
+			t.Errorf("Split(%q): boundaries not sorted: %v", spec, ts)
+		}
 	}
 }
 
