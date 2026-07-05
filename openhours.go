@@ -697,7 +697,11 @@ func weekday(wd time.Weekday) int {
 }
 
 func weekMinutes(t time.Time) int {
-	return (weekday(t.Weekday())-1)*minsPerDay + t.Hour()*minsPerHour + t.Minute()
+	// Clock decomposes the wall time once; separate Hour and Minute calls
+	// would each repeat the epoch-to-clock computation.
+	h, m, _ := t.Clock()
+
+	return (weekday(t.Weekday())-1)*minsPerDay + h*minsPerHour + m
 }
 
 func mondayOf(t time.Time) time.Time {
