@@ -396,6 +396,7 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 
 		switch {
 		case unicode.IsLetter(r):
+			start := i
 			j := i
 
 			for j < len(s) {
@@ -407,7 +408,7 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 				j += sz
 			}
 
-			word := s[i:j]
+			word := s[start:j]
 			i = j
 
 			wd := dayOf(word)
@@ -416,7 +417,7 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 			}
 
 			if openMin >= 0 || wantClose {
-				return nil, errAt(i, "dangling open time before day %q", word)
+				return nil, errAt(start, "dangling open time before day %q", word)
 			}
 
 			// A day token after a timed group starts the next group.
@@ -427,7 +428,7 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 
 			if dayRange {
 				if len(days) == 0 {
-					return nil, errAt(i, "day range with no start day")
+					return nil, errAt(start, "day range with no start day")
 				}
 
 				days = expandRange(days, wd)
@@ -439,6 +440,8 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 			lastDay = true
 
 		case '0' <= r && r <= '9':
+			start := i
+
 			h, m, j, err := readTime(s, i)
 			if err != nil {
 				return nil, err
@@ -455,18 +458,18 @@ func parse(spec string) ([]weekInterval, error) { //nolint:gocognit,gocyclo,cycl
 				wantClose = false
 				haveTimes = true
 			case openMin >= 0:
-				return nil, errAt(i, "expected '-' between open and close times")
+				return nil, errAt(start, "expected '-' between open and close times")
 			default:
 				if len(days) == 0 {
-					return nil, errAt(i, "time without a preceding day group")
+					return nil, errAt(start, "time without a preceding day group")
 				}
 
 				if dayRange {
-					return nil, errAt(i, "unfinished day range before time")
+					return nil, errAt(start, "unfinished day range before time")
 				}
 
 				if h == maxHour {
-					return nil, errAt(i, "24:00 is valid only as a close time")
+					return nil, errAt(start, "24:00 is valid only as a close time")
 				}
 
 				openMin = h*minsPerHour + m

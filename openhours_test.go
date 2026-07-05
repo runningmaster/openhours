@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -256,6 +257,38 @@ func TestSplitSorted(t *testing.T) {
 		ts, _ := l.Split(now)
 		if !slices.IsSortedFunc(ts, time.Time.Compare) {
 			t.Errorf("Split(%q): boundaries not sorted: %v", spec, ts)
+		}
+	}
+}
+
+// TestErrOffset pins that parse errors report the byte offset of the
+// offending token itself, not the position just past it.
+func TestErrOffset(t *testing.T) {
+	tests := []struct {
+		lstr string
+		want string
+	}{
+		// Second time token "14:00" starts at byte 9.
+		{"Mo 09:00 14:00", "(offset 9)"},
+		// The time itself is the offending token, at byte 0.
+		{"09:00-18:00", "(offset 0)"},
+		// Day token "Sa" interrupting a dangling open time, at byte 12.
+		{"Mo-Fr 08:00 Sa 10:00-12:00", "(offset 12)"},
+		// "24:00" as an open time, at byte 3.
+		{"Mo 24:00-06:00", "(offset 3)"},
+		// readTime errors already pointed at the token start; keep it that way.
+		{"Mo 8:0-20:00", "(offset 3)"},
+	}
+
+	for _, test := range tests {
+		_, err := openhours.Parse(test.lstr)
+		if err == nil {
+			t.Errorf("Parse(%q): expected error", test.lstr)
+			continue
+		}
+
+		if !strings.Contains(err.Error(), test.want) {
+			t.Errorf("Parse(%q): err = %v, want offset marker %q", test.lstr, err, test.want)
 		}
 	}
 }
