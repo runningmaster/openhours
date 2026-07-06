@@ -608,6 +608,42 @@ func TestUntil(t *testing.T) {
 	}
 }
 
+func TestAlways(t *testing.T) {
+	tests := []struct {
+		lstr string
+		want bool
+	}{
+		// The canonical 24/7 alias and its full-week equivalent.
+		{"24/7", true},
+		{"Mo-Su 00:00-24:00", true},
+		{"Mo-Su", true}, // trailing day group without times = whole days
+		{"Mo-Su 00:00-00:00", true},
+
+		// Overnight intervals that tile the whole week with no seam.
+		{"Mo-Su 12:00-12:00", true},
+
+		// Chains across the Su→Mo week boundary to close the ring.
+		{"Su 22:00-24:00 Mo 00:00-22:00 Mo-Sa 22:00-24:00 Tu-Su 00:00-22:00", true},
+
+		// Not 24/7: a gap somewhere in the week.
+		{"Mo-Fr 09:00-17:00", false},
+		{"Mo-Su 00:00-23:59", false}, // one minute short each day
+		{"Mo-Sa 00:00-24:00", false}, // Sunday missing
+		{"Su 22:00-02:00", false},    // single overnight interval, ring not closed
+		{"", false},
+		{"foobar", false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.lstr, func(t *testing.T) {
+			l, _ := openhours.Parse(test.lstr)
+			if got := l.Always(); got != test.want {
+				t.Errorf("Always(%q) = %v, want %v", test.lstr, got, test.want)
+			}
+		})
+	}
+}
+
 var blackhole bool //nolint:gochecknoglobals
 
 func BenchmarkSplit(b *testing.B) {

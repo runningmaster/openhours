@@ -181,6 +181,44 @@ func (l Schedule) Until(t time.Time) (open bool, boundary time.Time) {
 	return false, minsToTime(monday, l.ivs[0].open+minsPerWeek)
 }
 
+// Always reports whether the schedule is open at every minute of the week — a
+// 24/7 schedule. Unlike Until it takes no time: full-week coverage is a static
+// property of the schedule, so this is a pure O(n) scan over the sorted
+// intervals with no time.Time decomposition or allocation.
+func (l Schedule) Always() bool {
+	if len(l.ivs) == 0 {
+		return false
+	}
+
+	// Overnight Sunday→Monday intervals (close > minsPerWeek) cover [0, close-week)
+	// at the start of the week; seed reach with the furthest such wrap.
+	reach := 0
+
+	for _, iv := range l.ivs {
+		if c := iv.close - minsPerWeek; c > reach {
+			reach = c
+		}
+	}
+
+	// Intervals are sorted by open, so a single sweep suffices: any interval
+	// starting past the covered prefix leaves a gap the week can never fill.
+	for _, iv := range l.ivs {
+		if iv.open > reach {
+			return false
+		}
+
+		if iv.close > reach {
+			reach = iv.close
+		}
+
+		if reach >= minsPerWeek {
+			return true
+		}
+	}
+
+	return reach >= minsPerWeek
+}
+
 // unionEnd returns the close of the union of intervals covering tm: starting
 // from the widest interval containing tm, it keeps extending the boundary while
 // another interval overlaps or touches it. Each interval is also considered
